@@ -26,9 +26,6 @@ enum AiosBroadcasterDefaults {
     /// Owner identifier — matches the aiOS sidecar's OWNER_COLORS map.
     /// Each user of this fork sets their own (`defaults write …`).
     static let owner = "tony"
-    /// Minimum seconds between broadcasts to avoid spamming the sidecar
-    /// (UsageStore refreshes can fire faster than this in some edge cases).
-    static let minIntervalSeconds: TimeInterval = 30
 }
 
 @MainActor
@@ -37,7 +34,6 @@ final class AiosBroadcaster {
     private init() {}
 
     private var cancellables = Set<AnyCancellable>()
-    private var lastBroadcastAt: Date = .distantPast
     private var started = false
 
     /// Reading happens lazily so tests / previews can override before start.
@@ -53,22 +49,33 @@ final class AiosBroadcaster {
     func start() {
         guard !started else { return }
         started = true
+        NSLog(
+            "AiosBroadcaster.start endpoint=%@ owner=%@",
+            endpoint,
+            owner
+        )
         UsageStore.shared.$lastUpdated
             .compactMap { $0 }
             .removeDuplicates()
-            .sink { [weak self] _ in self?.maybeBroadcast() }
+            .sink { [weak self] _ in self?.broadcast() }
             .store(in: &cancellables)
+        // If UsageStore already finished its first refresh before we
+        // subscribed (likely — App.swift starts the store first), broadcast
+        // immediately. Otherwise the first user-visible broadcast waits a
+        // full poll interval (default 5 min).
+        if UsageStore.shared.lastUpdated != nil {
+            NSLog("AiosBroadcaster.start: catching up an already-fresh refresh")
+            broadcast()
+        }
     }
 
-    private func maybeBroadcast() {
+    private func broadcast() {
         let endpoint = self.endpoint
-        guard !endpoint.isEmpty, URL(string: endpoint) != nil else { return }
-        let now = Date()
-        if now.timeIntervalSince(lastBroadcastAt)
-            < AiosBroadcasterDefaults.minIntervalSeconds {
+        guard !endpoint.isEmpty, URL(string: endpoint) != nil else {
+            NSLog("AiosBroadcaster.broadcast skipped — empty/invalid endpoint")
             return
         }
-        lastBroadcastAt = now
+        NSLog("AiosBroadcaster.broadcast → %@", endpoint)
 
         let owner = self.owner
         let host = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
@@ -137,15 +144,15 @@ final class AiosBroadcaster {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (_, resp) = try await URLSession.shared.data(for: req)
-            if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            if let http = resp as? HTTPURLResponse {
                 NSLog(
-                    "AiosBroadcaster: %@ → HTTP %d",
+                    "AiosBroadcaster.send %@ → HTTP %d",
                     subscriptionId,
                     http.statusCode
                 )
             }
         } catch {
-            NSLog("AiosBroadcaster: %@ failed: %@", subscriptionId, error.localizedDescription)
+            NSLog("AiosBroadcaster.send %@ FAILED: %@", subscriptionId, error.localizedDescription)
         }
     }
 }
