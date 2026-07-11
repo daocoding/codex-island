@@ -158,10 +158,13 @@ enum UsageFetcher {
                    let type = err["type"] as? String, type == "rate_limit_error" {
                     return .rateLimited
                 }
+                let scoped = parseClaudeScopedWeekly(obj)
                 return .success(AppUsage(
                     fiveHour: parseClaudeWindow(obj["five_hour"]),
                     weekly: parseClaudeWindow(obj["seven_day"]),
-                    plan: plan
+                    plan: plan,
+                    scopedWeekly: scoped?.window,
+                    scopedLabel: scoped?.label
                 ))
             }
             return .otherError("parse error")
@@ -179,14 +182,49 @@ enum UsageFetcher {
         // and rendered as 50%–100%. Always divide by 100; clamp below.
         let raw = (d["utilization"] as? Double) ?? (d["used_percent"] as? Double) ?? 0
         let normalized = raw / 100.0
-        var resetAt: Date?
-        if let r = d["resets_at"] as? Double {
-            resetAt = Date(timeIntervalSince1970: r)
-        } else if let s = d["resets_at"] as? String {
+        return WindowUsage(
+            usedPercent: min(1, max(0, normalized)),
+            resetAt: parseClaudeResetDate(d["resets_at"]),
+            error: nil
+        )
+    }
+
+    /// Model-scoped weekly bucket (Max plans' separate flagship-model limit).
+    /// The modern shape is the `limits[]` array: the `weekly_scoped` entry
+    /// carries `percent` plus the model's display name ("Fable") under
+    /// `scope.model` — the legacy `seven_day_opus` field is null on Claude
+    /// 5-family plans. Fall back to it for accounts still on the old shape.
+    /// Internal (not private) so ResolveUsageTests can lock the parse against
+    /// a captured real response.
+    static func parseClaudeScopedWeekly(_ obj: [String: Any]) -> (window: WindowUsage, label: String)? {
+        if let limits = obj["limits"] as? [[String: Any]] {
+            for entry in limits where (entry["kind"] as? String) == "weekly_scoped" {
+                guard let percent = entry["percent"] as? Double else { continue }
+                let scope = entry["scope"] as? [String: Any]
+                let model = scope?["model"] as? [String: Any]
+                let window = WindowUsage(
+                    usedPercent: min(1, max(0, percent / 100.0)),
+                    resetAt: parseClaudeResetDate(entry["resets_at"]),
+                    error: nil
+                )
+                return (window, (model?["display_name"] as? String) ?? "model")
+            }
+        }
+        if let legacy = obj["seven_day_opus"] as? [String: Any] {
+            return (parseClaudeWindow(legacy), "Opus")
+        }
+        return nil
+    }
+
+    private static func parseClaudeResetDate(_ value: Any?) -> Date? {
+        if let r = value as? Double {
+            return Date(timeIntervalSince1970: r)
+        }
+        if let s = value as? String {
             let f = ISO8601DateFormatter()
             f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            resetAt = f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+            return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
         }
-        return WindowUsage(usedPercent: min(1, max(0, normalized)), resetAt: resetAt, error: nil)
+        return nil
     }
 }

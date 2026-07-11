@@ -143,6 +143,50 @@ struct ResolveUsageTests {
         expect(ClaudeCredentials.readClaudeFileCandidates().isEmpty, "T5 missing file yields no candidates")
         unsetenv("CLAUDE_CONFIG_DIR")
 
+        // T6 — model-scoped weekly parse (the Fable tile). The fixture is the
+        // exact response shape captured from /api/oauth/usage on a Max
+        // account (2026-07-10): the scoped bucket lives in `limits[]` keyed
+        // by kind == "weekly_scoped" with `percent` (not `utilization`), and
+        // the legacy seven_day_opus field is null.
+        let scopedFixture = """
+        {
+          "five_hour": {"utilization": 3.0, "resets_at": "2026-07-11T04:49:59.870074+00:00"},
+          "seven_day": {"utilization": 15.0, "resets_at": "2026-07-12T21:59:59.870096+00:00"},
+          "seven_day_opus": null,
+          "limits": [
+            {"kind": "session", "group": "session", "percent": 3, "severity": "normal",
+             "resets_at": "2026-07-11T04:49:59.870074+00:00", "scope": null, "is_active": false},
+            {"kind": "weekly_all", "group": "weekly", "percent": 15, "severity": "normal",
+             "resets_at": "2026-07-12T21:59:59.870096+00:00", "scope": null, "is_active": false},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 23, "severity": "normal",
+             "resets_at": "2026-07-12T21:59:59.870379+00:00",
+             "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null},
+             "is_active": true}
+          ]
+        }
+        """
+        let scopedObj = try! JSONSerialization.jsonObject(with: Data(scopedFixture.utf8)) as! [String: Any]
+        let scoped = UsageFetcher.parseClaudeScopedWeekly(scopedObj)
+        expect(scoped != nil, "T6 scoped weekly parses from limits[]")
+        expect(scoped?.label == "Fable", "T6 scoped label is the server display_name")
+        expect(scoped.map { abs($0.window.usedPercent - 0.23) < 0.0001 } == true, "T6 scoped percent normalizes to 0.23")
+        expect(scoped?.window.resetAt != nil, "T6 scoped resets_at parses (fractional-seconds ISO8601)")
+
+        // No scoped limit anywhere (free/pro plans) → nil, so the UI renders
+        // no third tile.
+        let unscoped = UsageFetcher.parseClaudeScopedWeekly([
+            "five_hour": [:], "seven_day_opus": NSNull(),
+        ])
+        expect(unscoped == nil, "T6 no scoped limit yields nil")
+
+        // Legacy accounts still on the seven_day_opus shape fall back with
+        // the fixed Opus label.
+        let legacy = UsageFetcher.parseClaudeScopedWeekly([
+            "seven_day_opus": ["utilization": 40.0, "resets_at": "2026-07-12T21:59:59+00:00"],
+        ])
+        expect(legacy?.label == "Opus", "T6 legacy seven_day_opus falls back with Opus label")
+        expect(legacy.map { abs($0.window.usedPercent - 0.4) < 0.0001 } == true, "T6 legacy percent normalizes")
+
         // The store and views match these exact strings; a reword is a
         // breaking change for them, not a copy edit.
         expect(ClaudeCredentials.rateLimitedMessage == "rate limited", "rateLimitedMessage literal is stable")

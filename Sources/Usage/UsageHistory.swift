@@ -11,6 +11,10 @@ struct UsageSample: Codable {
 enum UsageWindow: String, Codable {
     case fiveHour
     case weekly
+    /// Model-scoped weekly bucket (Claude Max's Fable/Opus limit). Additive:
+    /// the raw value only ever appears in series keys, so old persisted
+    /// history decodes unchanged.
+    case scopedWeekly
 }
 
 /// Records the usage percentages the app already polls so the SparkChart can
@@ -50,6 +54,9 @@ final class UsageHistoryStore: ObservableObject {
     func record(provider: AlertEngine.Provider, usage: AppUsage, at: Date) {
         var changed = append(provider, .fiveHour, usage.fiveHour, at)
         changed = append(provider, .weekly, usage.weekly, at) || changed
+        if let scoped = usage.scopedWeekly {
+            changed = append(provider, .scopedWeekly, scoped, at) || changed
+        }
         if changed {
             persist()
             revision &+= 1

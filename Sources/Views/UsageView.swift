@@ -100,6 +100,15 @@ struct ChartsBlock: View {
                 ChartTile(style: style, color: color, labelKey: "week",
                           window: usage.weekly, seed: seed + 1,
                           provider: provider, windowKind: .weekly)
+                // Model-scoped weekly limit (Claude Max's Fable bucket).
+                // Server-driven: the tile and its label only exist when the
+                // usage endpoint reports a scoped limit for this account.
+                if let scoped = usage.scopedWeekly {
+                    ChartTile(style: style, color: color,
+                              labelKey: usage.scopedLabel ?? "model",
+                              window: scoped, seed: seed + 4,
+                              provider: provider, windowKind: .scopedWeekly)
+                }
             }
             if needsReauth && ClaudeCredentials.canPromptReauth() {
                 ReauthButton()

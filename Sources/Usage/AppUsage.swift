@@ -31,11 +31,26 @@ struct AppUsage {
     /// Provider-reported plan tier — Claude's `subscriptionType` (free/pro/max)
     /// or Codex's `plan_type` (free/plus/pro). nil when unknown.
     var plan: String?
+    /// Model-scoped weekly window on plans that carry one (Claude Max's
+    /// Fable/Opus bucket, from the usage endpoint's `limits[]` weekly_scoped
+    /// entry). nil when the plan has no scoped limit — the UI shows no tile.
+    var scopedWeekly: WindowUsage?
+    /// Display name of the scoped model ("Fable"), server-provided so a
+    /// renamed or additional flagship model needs no app update.
+    var scopedLabel: String?
 
-    init(fiveHour: WindowUsage, weekly: WindowUsage, plan: String? = nil) {
+    init(
+        fiveHour: WindowUsage,
+        weekly: WindowUsage,
+        plan: String? = nil,
+        scopedWeekly: WindowUsage? = nil,
+        scopedLabel: String? = nil
+    ) {
         self.fiveHour = fiveHour
         self.weekly = weekly
         self.plan = plan
+        self.scopedWeekly = scopedWeekly
+        self.scopedLabel = scopedLabel
     }
 
     static let empty = AppUsage(fiveHour: .unknown, weekly: .unknown)

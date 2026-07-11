@@ -16,6 +16,8 @@ swiftc \
   Sources/Model/UsageDisplayModeStore.swift \
   Sources/Usage/AppUsage.swift \
   Sources/Usage/ClaudeCredentials.swift \
+  Sources/Usage/CodexResetCredits.swift \
+  Sources/Usage/UsageFetcher.swift \
   Tests/ResolveUsageTests.swift
 
 CLAUDE_CODE_OAUTH_TOKEN="test-stub-token" "$OUT_DIR/resolve-usage-tests"
