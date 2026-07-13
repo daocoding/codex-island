@@ -166,3 +166,4 @@
 "resets in %d minutes" = "%d 分钟后重置";
 "Swipe to change pages." = "滑动切换页面。";
 "Tightens the gap between logos when the island is on a screen without a hardware notch." = "在没有硬件刘海的屏幕上收紧 logo 之间的间距。";
+"Tightens the center gap on screens without a hardware notch." = "在没有硬件刘海的屏幕上收紧中央间距。";

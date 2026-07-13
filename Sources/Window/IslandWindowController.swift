@@ -122,7 +122,7 @@ final class IslandWindowController {
 
         let size = model.size
         let rect = NSRect(
-            x: win.width / 2 + model.horizontalCenterOffset - size.width / 2,
+            x: win.width / 2 - size.width / 2,
             y: win.height - size.height,
             width: size.width,
             height: size.height

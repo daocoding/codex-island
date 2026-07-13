@@ -70,49 +70,51 @@ struct IslandRootView: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .topLeading) {
-                    LogoOverlay(
-                        image: claudeLogo,
-                        color: IslandColor.claude,
-                        provider: .claude,
-                        edgePadding: logoEdgePadding,
-                        topPadding: max(0, (model.notch.height - 20) / 2)
-                    )
+                    if compactLogoVisible {
+                        LogoOverlay(
+                            image: claudeLogo,
+                            color: IslandColor.claude,
+                            provider: .claude,
+                            edgePadding: logoEdgePadding,
+                            topPadding: max(0, (model.notch.height - 20) / 2)
+                        )
+                    }
                 }
                 .overlay(alignment: .topTrailing) {
-                    LogoOverlay(
-                        image: openaiLogo,
-                        color: IslandColor.codex,
-                        provider: .codex,
-                        edgePadding: logoEdgePadding,
-                        topPadding: max(0, (model.notch.height - 20) / 2)
-                    )
+                    if compactLogoVisible {
+                        LogoOverlay(
+                            image: openaiLogo,
+                            color: IslandColor.codex,
+                            provider: .codex,
+                            edgePadding: logoEdgePadding,
+                            topPadding: max(0, (model.notch.height - 20) / 2)
+                        )
+                    }
                 }
                 .overlay(alignment: .topLeading) {
                     if model.state != .compact {
-                        HStack(spacing: 0) {
-                            Color.clear
-                                .frame(width: model.tabWidth)
-                            CoreUsageOverlay(
-                                provider: .claude,
-                                metricsVisible: pillsVisible
-                            )
-                            .frame(width: model.claudeRailWidth, alignment: .leading)
-                        }
-                        .padding(.top, max(0, (model.notch.height - 28) / 2))
+                        CompactProviderGauge(
+                            provider: .claude,
+                            metricsVisible: pillsVisible
+                        )
+                        .frame(
+                            width: model.tabWidth,
+                            height: model.notch.height,
+                            alignment: .center
+                        )
                     }
                 }
                 .overlay(alignment: .topTrailing) {
                     if model.state != .compact {
-                        HStack(spacing: 0) {
-                            CoreUsageOverlay(
-                                provider: .codex,
-                                metricsVisible: pillsVisible
-                            )
-                            .frame(width: model.codexRailWidth, alignment: .trailing)
-                            Color.clear
-                                .frame(width: model.tabWidth)
-                        }
-                        .padding(.top, max(0, (model.notch.height - 28) / 2))
+                        CompactProviderGauge(
+                            provider: .codex,
+                            metricsVisible: pillsVisible
+                        )
+                        .frame(
+                            width: model.tabWidth,
+                            height: model.notch.height,
+                            alignment: .center
+                        )
                     }
                 }
                 .overlay(alignment: .bottomLeading) {
@@ -224,7 +226,6 @@ struct IslandRootView: View {
                         }
                     }
                 }
-                .offset(x: model.horizontalCenterOffset)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -340,6 +341,13 @@ struct IslandRootView: View {
         alwaysShow.enabled ? .peek : .compact
     }
 
+    /// In optional logo-only mode the logos occupy the same 38pt slots as
+    /// the gauges. During the compact↔peek cross-fade, keep them visible until
+    /// the gauge content arrives so there is never a blank frame.
+    private var compactLogoVisible: Bool {
+        model.state == .compact || (model.state == .peek && !pillsVisible)
+    }
+
     private var accessibilityHintForState: String {
         switch model.state {
         case .compact:
@@ -354,9 +362,8 @@ struct IslandRootView: View {
         }
     }
 
-    /// Keep both logos at the silhouette's outer edges in every state. The
-    /// peek rails grow inward from those anchors, placing all four readings
-    /// between the provider marks and the physical notch.
+    /// Edge inset for the optional logo-only state. Gauges replace these
+    /// images in-place, preserving the exact same compact footprint.
     private var logoEdgePadding: CGFloat {
         9
     }
@@ -487,34 +494,61 @@ private struct LogoOverlay: View {
     }
 }
 
-/// Always-visible core metrics. Claude contributes 5h/week/Fable and Codex
-/// contributes its weekly bucket. The provider logos anchor the outer edges;
-/// these readings occupy the two inner rails beside the physical notch.
-private struct CoreUsageOverlay: View {
+/// Provider usage compressed into the original 38pt logo slot. Claude uses
+/// three concentric rings (outer Fable, middle week, inner 5h); Codex uses a
+/// single weekly ring. Both centers mean the same thing: weekly reset time.
+private struct CompactProviderGauge: View {
     let provider: AlertEngine.Provider
     let metricsVisible: Bool
 
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
     @ObservedObject private var usageStore = UsageStore.shared
+    @ObservedObject private var usageDisplay = UsageDisplayModeStore.shared
 
     var body: some View {
-        HStack(spacing: 4) {
-            let items = metrics
-            ForEach(items.indices, id: \.self) { index in
-                CoreUsageMetric(
-                    label: items[index].label,
-                    window: items[index].window,
-                    tint: tint
-                )
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            ZStack {
+                if provider == .claude {
+                    CompactUsageRing(
+                        window: usage.scopedWeekly ?? .unknown,
+                        diameter: 30,
+                        color: tint
+                    )
+                    CompactUsageRing(
+                        window: usage.weekly,
+                        diameter: 24,
+                        color: tint.opacity(0.82)
+                    )
+                    CompactUsageRing(
+                        window: usage.fiveHour,
+                        diameter: 18,
+                        color: tint.opacity(0.64)
+                    )
+                } else {
+                    CompactUsageRing(
+                        window: codexWeeklyWindow,
+                        diameter: 30,
+                        color: tint
+                    )
+                }
+
+                Text(resetText(for: weeklyResetWindow, at: context.date))
+                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .frame(width: provider == .claude ? 14 : 24)
             }
+            .frame(width: 30, height: 30)
+            .opacity((metricsVisible && isVisible) ? 1 : 0)
+            .scaleEffect(metricsVisible ? 1 : 0.82)
+            .animation(.openMorph, value: isVisible)
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(providerLabel)
+            .accessibilityValue(accessibilityValue(at: context.date))
+            .accessibilityHidden(!(metricsVisible && isVisible))
         }
-        .opacity((metricsVisible && isVisible) ? 1 : 0)
-        .animation(.openMorph, value: isVisible)
-        .offset(x: metricsVisible ? 0 : (provider == .claude ? -6 : 6))
-        .allowsHitTesting(false)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(providerLabel)
-        .accessibilityHidden(!(metricsVisible && isVisible))
     }
 
     private var isVisible: Bool {
@@ -528,20 +562,12 @@ private struct CoreUsageOverlay: View {
         }
     }
 
-    private var metrics: [(label: String, window: WindowUsage)] {
-        switch provider {
-        case .claude:
-            return [
-                (L10n.tr("5h"), usage.fiveHour),
-                (L10n.tr("week"), usage.weekly),
-                (usage.scopedLabel ?? "Fable", usage.scopedWeekly ?? .unknown),
-            ]
-        case .codex:
-            if let label = usage.weeklyWindowLabel {
-                return [(L10n.tr(label), usage.weekly)]
-            }
-            return [(L10n.tr(usage.headlineWindowLabel), usage.headlineWindow)]
-        }
+    private var codexWeeklyWindow: WindowUsage {
+        usage.weeklyWindowLabel == nil ? usage.headlineWindow : usage.weekly
+    }
+
+    private var weeklyResetWindow: WindowUsage {
+        provider == .claude ? usage.weekly : codexWeeklyWindow
     }
 
     private var tint: Color {
@@ -557,105 +583,60 @@ private struct CoreUsageOverlay: View {
         case .codex:  return "Codex"
         }
     }
+
+    private func resetText(for window: WindowUsage, at date: Date) -> String {
+        guard let resetAt = window.resetAt else { return "—" }
+        let remaining = resetAt.timeIntervalSince(date)
+        guard remaining > 0 else { return "0m" }
+        if remaining < 60 { return "<1m" }
+        return Duration.compact(remaining)
+    }
+
+    private func accessibilityValue(at date: Date) -> String {
+        let reset = resetText(for: weeklyResetWindow, at: date)
+        switch provider {
+        case .claude:
+            let scoped = usage.scopedWeekly?.displayedPercentInt(mode: usageDisplay.mode)
+            let scopedText = scoped.map { "\(usage.scopedLabel ?? "Fable") \($0) percent" }
+                ?? "Fable unavailable"
+            return "5 hour \(usage.fiveHour.displayedPercentInt(mode: usageDisplay.mode)) percent, "
+                + "week \(usage.weekly.displayedPercentInt(mode: usageDisplay.mode)) percent, "
+                + "\(scopedText), weekly reset \(reset)"
+        case .codex:
+            return "week \(codexWeeklyWindow.displayedPercentInt(mode: usageDisplay.mode)) percent, "
+                + "weekly reset \(reset)"
+        }
+    }
 }
 
-private struct CoreUsageMetric: View {
-    let label: String
+private struct CompactUsageRing: View {
     let window: WindowUsage
-    let tint: Color
+    let diameter: CGFloat
+    let color: Color
 
     @ObservedObject private var usageDisplay = UsageDisplayModeStore.shared
 
     var body: some View {
-        let value = window.displayedFraction(mode: usageDisplay.mode) * 100
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            HStack(spacing: 4) {
-                ZStack {
-                    Circle()
-                        .stroke(.white.opacity(0.10), lineWidth: 2)
-                    Circle()
-                        .trim(from: 0, to: ringFraction(value))
-                        .stroke(
-                            ringColor,
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                        .animation(.strongEaseOut, value: value)
-                    HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        Text(valueNumber(value))
-                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(valueColor(value))
-                            .numericTransition(value: value)
-                            .animation(.strongEaseOut, value: value)
-                        if hasValue {
-                            Text("%")
-                                .font(.system(size: 5, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.48))
-                        }
-                    }
-                }
-                .frame(width: 28, height: 28)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(label)
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(tint.opacity(0.82))
-                        .minimumScaleFactor(0.6)
-                    Text(resetText(at: context.date))
-                        .font(.system(size: 7, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.46))
-                }
-                .lineLimit(1)
-                .frame(width: 24, alignment: .leading)
-            }
-            .frame(width: 56, height: 28, alignment: .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(label)
-            .accessibilityValue(accessibilityValue(value, at: context.date))
+        let fraction = window.displayedFraction(mode: usageDisplay.mode)
+        ZStack {
+            Circle()
+                .stroke(.white.opacity(hasValue ? 0.09 : 0.05), lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: ringFraction(fraction))
+                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.strongEaseOut, value: fraction)
         }
+        .frame(width: diameter, height: diameter)
     }
 
     private var hasValue: Bool {
         window.error == nil || window.usedPercent > 0
     }
 
-    private var ringColor: Color {
-        hasValue ? tint : .white.opacity(0.18)
-    }
-
-    private func ringFraction(_ value: Double) -> Double {
+    private func ringFraction(_ fraction: Double) -> Double {
         guard hasValue else { return 0 }
-        return max(0.001, min(1, value / 100))
-    }
-
-    private func valueNumber(_ value: Double) -> String {
-        hasValue ? "\(Int(value.rounded()))" : "—"
-    }
-
-    private func valueText(_ value: Double) -> String {
-        hasValue ? "\(valueNumber(value))%" : valueNumber(value)
-    }
-
-    private func valueColor(_ value: Double) -> Color {
-        if window.error != nil && window.usedPercent == 0 {
-            return .white.opacity(0.35)
-        }
-        return UrgencyColor.value(value, mode: usageDisplay.mode)
-    }
-
-    private func resetText(at date: Date) -> String {
-        guard let resetAt = window.resetAt else { return "↻—" }
-        let remaining = resetAt.timeIntervalSince(date)
-        guard remaining > 0 else { return "↻0m" }
-        if remaining < 60 { return "↻<1m" }
-        return "↻\(Duration.compact(remaining))"
-    }
-
-    private func accessibilityValue(_ value: Double, at date: Date) -> String {
-        guard let resetAt = window.resetAt else { return valueText(value) }
-        let remaining = resetAt.timeIntervalSince(date)
-        guard remaining > 0 else { return "\(valueText(value)), reset due" }
-        return "\(valueText(value)), resets in \(Duration.compact(remaining))"
+        return max(0.001, min(1, fraction))
     }
 }
 

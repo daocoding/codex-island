@@ -13,14 +13,10 @@ final class IslandModel: ObservableObject {
     @Published var size: CGSize = .zero
     @Published var notch: NotchInfo
 
-    /// Side extension that houses each brand logo in compact state.
+    /// Side extension that houses each provider's compact usage gauge. The
+    /// optional logo-only mode uses the same slot, so neither state adds
+    /// width beyond the original silhouette.
     let tabWidth: CGFloat = 38
-
-    /// Inner rails are intentionally asymmetric: Claude needs three 56pt
-    /// ring cells while Codex needs one. `horizontalCenterOffset` keeps the
-    /// physical notch anchored despite the unequal silhouette extensions.
-    let claudeRailWidth: CGFloat = 176
-    let codexRailWidth: CGFloat = 56
 
     /// Visible expanded panel width.
     private let expandedWidth: CGFloat = 800
@@ -47,10 +43,6 @@ final class IslandModel: ObservableObject {
     private var overviewDayDetailVisible = false
 
     private var subs: Set<AnyCancellable> = []
-
-    var horizontalCenterOffset: CGFloat {
-        state == .peek ? horizontalLayout.peekCenterOffset : 0
-    }
 
     init(notch: NotchInfo) {
         self.rawNotch = notch
@@ -166,14 +158,9 @@ final class IslandModel: ObservableObject {
 
     private func recomputeSize() {
         switch state {
-        case .compact:
+        case .compact, .peek:
             size = CGSize(
-                width: horizontalLayout.compactWidth,
-                height: notch.height
-            )
-        case .peek:
-            size = CGSize(
-                width: horizontalLayout.peekWidth,
+                width: notch.width + tabWidth * 2,
                 height: notch.height
             )
         case .expanded:
@@ -182,15 +169,6 @@ final class IslandModel: ObservableObject {
                 height: expandedContentHeight + notch.height
             )
         }
-    }
-
-    private var horizontalLayout: IslandHorizontalLayout {
-        IslandHorizontalLayout(
-            notchWidth: notch.width,
-            tabWidth: tabWidth,
-            claudeRailWidth: claudeRailWidth,
-            codexRailWidth: codexRailWidth
-        )
     }
 
     private var expandedContentHeight: CGFloat {

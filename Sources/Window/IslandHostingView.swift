@@ -34,7 +34,7 @@ final class IslandHostingView: NSHostingView<IslandRootView> {
         let b = bounds
         let size = islandModel.size
         let rect = NSRect(
-            x: b.midX + islandModel.horizontalCenterOffset - size.width / 2,
+            x: b.midX - size.width / 2,
             y: b.maxY - size.height,
             width: size.width,
             height: size.height

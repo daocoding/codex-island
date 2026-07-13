@@ -666,7 +666,7 @@ struct SettingsView: View {
             sectionLabel("Spacing")
             SettingsRow(
                 title: "Island width",
-                subtitle: "Tightens the gap between logos when the island is on a screen without a hardware notch."
+                subtitle: "Tightens the center gap on screens without a hardware notch."
             ) {
                 spacingSegmented
             }
