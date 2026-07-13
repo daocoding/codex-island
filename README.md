@@ -157,6 +157,9 @@ For Claude:
   tokens or writes to Claude's credential store; run `claude` when an access
   token expires, or `claude /login` when the endpoint requires a newly scoped
   token.
+- Because current builds are unsigned, Keychain reads use Apple's signed
+  `/usr/bin/security` helper. If macOS asks once, choose **Always Allow**;
+  subsequent CodexIsland rebuilds and relaunches should not ask again.
 - If none work, the panel shows `auth required — run claude`.
 
 The first fetch starts at app launch so the panel usually has values ready by

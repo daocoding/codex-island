@@ -66,7 +66,9 @@ Codex：
 Claude：
 
 - 运行一次 `claude`，或打开 Claude Desktop，让 Claude 凭据写入本机。
-- CodexIsland 会依次尝试 `CLAUDE_CODE_OAUTH_TOKEN`、macOS Keychain 里的 `Claude Code-credentials`，以及 Anthropic OAuth token endpoint 的刷新流程。
+- CodexIsland 会依次尝试 `CLAUDE_CODE_OAUTH_TOKEN`、`$CLAUDE_CONFIG_DIR/.credentials.json`（通常为 `~/.claude/.credentials.json`），以及 macOS Keychain 里的 `Claude Code-credentials`。
+- 凭据访问严格为只读；CodexIsland 不会刷新 OAuth token，也不会写入 Claude 的凭据存储。
+- 由于当前构建没有 Apple 签名，Keychain 读取会使用 Apple 签名的 `/usr/bin/security` 辅助程序。macOS 首次询问时选择“始终允许”，之后重建或重启 CodexIsland 都不应再次询问。
 - 如果都不可用，面板会显示 `auth required — run claude`。
 
 应用启动后会立即进行第一次拉取，所以你第一次悬停时通常已经能看到数据。打开设置也会触发一次刷新。

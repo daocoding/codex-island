@@ -137,6 +137,18 @@ struct ResolveUsageTests {
             ]),
         ])
         expect(mixed?.accessToken == "file-at", "T5 file store wins over a coexisting keychain item")
+        var keychainRead = false
+        let lazyPick = ClaudeCredentials.selectClaudeCreds(
+            fileCandidates: fileCandidates,
+            keychainCandidates: {
+                keychainRead = true
+                return [ClaudeCredentials.KeychainCandidate(account: "ericpark", blob: [
+                    "claudeAiOauth": ["accessToken": "stale-keychain-at"],
+                ])]
+            }
+        )
+        expect(lazyPick?.accessToken == "file-at", "T5 lazy file precedence returns file credential")
+        expect(!keychainRead, "T5 usable file credential does not touch keychain")
         // Keep CLAUDE_CONFIG_DIR pinned to the (now deleted) fixture dir so
         // this assertion never touches a real ~/.claude on the dev machine.
         try? FileManager.default.removeItem(atPath: fixtureDir)
@@ -226,6 +238,15 @@ struct ResolveUsageTests {
         ])
         expect(durationless.shortWindowLabel == "5h" && durationless.weeklyWindowLabel == "week",
                "T7 durationless response preserves legacy key mapping")
+
+        // T8 — unsigned/ad-hoc builds have a content-hash identity that
+        // changes whenever the app is rebuilt. Route those through Apple's
+        // stable security helper so an Always Allow grant actually persists;
+        // a certificate-signed build keeps native in-process attribution.
+        expect(ClaudeCredentials.shouldUseSecurityCLI(hasStableSigningIdentity: false),
+               "T8 unsigned build uses stable security CLI identity")
+        expect(!ClaudeCredentials.shouldUseSecurityCLI(hasStableSigningIdentity: true),
+               "T8 signed build keeps in-process keychain access")
 
         // The store and views match these exact strings; a reword is a
         // breaking change for them, not a copy edit.

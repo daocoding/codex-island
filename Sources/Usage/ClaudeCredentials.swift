@@ -184,7 +184,9 @@ enum ClaudeCredentials {
     private static func readClaudeCreds() -> ClaudeCreds? {
         if let cachedClaudeCreds { return cachedClaudeCreds }
         let creds = selectClaudeCreds(
-            from: readClaudeFileCandidates() + readClaudeKeychainCandidates())
+            fileCandidates: readClaudeFileCandidates(),
+            keychainCandidates: readClaudeKeychainCandidates
+        )
         cachedClaudeCreds = creds
         return creds
     }
@@ -227,10 +229,25 @@ enum ClaudeCredentials {
         return nil
     }
 
+    /// Preserve Claude Code's credential-store precedence without eagerly
+    /// evaluating the Keychain fallback. Besides avoiding stale credentials,
+    /// this matters for UX: a usable file credential must not trigger a
+    /// pointless Keychain authorization prompt merely because an old item is
+    /// still present there.
+    static func selectClaudeCreds(
+        fileCandidates: [KeychainCandidate],
+        keychainCandidates: () -> [KeychainCandidate]
+    ) -> ClaudeCreds? {
+        if let fileCreds = selectClaudeCreds(from: fileCandidates) {
+            return fileCreds
+        }
+        return selectClaudeCreds(from: keychainCandidates())
+    }
+
     /// Decoded blob for every account under the service. Side-effecting: the
-    /// secret read trips the keychain ACL prompt (in-process first, `security`
-    /// CLI fallback) — callers go through the `readClaudeCreds` cache so this
-    /// runs rarely, not every poll.
+    /// secret read may trip the Keychain ACL prompt through the requester
+    /// selected below. Callers go through the `readClaudeCreds` cache so this
+    /// runs once per process, not every poll.
     private static func readClaudeKeychainCandidates() -> [KeychainCandidate] {
         let accounts = claudeKeychainAccounts()
         return accounts.compactMap { account in
@@ -258,16 +275,22 @@ enum ClaudeCredentials {
 
     /// Decoded JSON blob of one account's item, or nil on any read/parse error.
     ///
-    /// Primary path is an in-process `SecItemCopyMatching`, so the keychain
-    /// ACL prompt is attributed to CodexIsland (and "Always Allow" grants
-    /// this app) instead of the generic `/usr/bin/security` binary. The CLI
-    /// fallback stays default-ON: the app is ad-hoc signed, so its keychain
-    /// identity changes with every build and a previously granted in-process
-    /// ACL entry can stop matching after an update. `security` is
-    /// Apple-signed with a stable identity, so a grant to it persists — a
-    /// denied/failed SecItem read must degrade to the old working path, not
-    /// to silently-missing Claude usage.
+    /// Properly signed builds read in-process so the prompt is attributed to
+    /// CodexIsland. Unsigned/ad-hoc builds have no stable signing identity:
+    /// Keychain cannot make "Always Allow" survive rebuilds, so they read
+    /// through Apple's signed `/usr/bin/security` helper instead. Its stable
+    /// identity lets that choice persist across app updates and relaunches.
+    /// A future Developer ID build automatically returns to the in-process
+    /// path without another code change.
     private static func readClaudeKeychainBlob(account: String) -> [String: Any]? {
+        if shouldUseSecurityCLI(hasStableSigningIdentity: hasStableSigningIdentity) {
+            return readClaudeKeychainBlobViaSecurityCLI(account: account)
+        }
+
+        return readClaudeKeychainBlobInProcess(account: account)
+    }
+
+    private static func readClaudeKeychainBlobInProcess(account: String) -> [String: Any]? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "Claude Code-credentials",
@@ -283,6 +306,39 @@ enum ClaudeCredentials {
         }
         return decodeClaudeKeychainBlob(data)
     }
+
+    /// Pure seam for regression tests: unsigned/ad-hoc binaries must use the
+    /// stable helper; certificate-signed binaries should retain the native
+    /// in-process Keychain attribution.
+    static func shouldUseSecurityCLI(hasStableSigningIdentity: Bool) -> Bool {
+        !hasStableSigningIdentity
+    }
+
+    /// A certificate chain gives Keychain a stable designated requirement.
+    /// Linker/ad-hoc signatures have no certificates and are identified only
+    /// by a content hash, which changes on every build.
+    private static let hasStableSigningIdentity: Bool = {
+        var dynamicCode: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &dynamicCode) == errSecSuccess,
+              let dynamicCode else { return false }
+
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(dynamicCode, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+
+        var signingInfo: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInfo
+        ) == errSecSuccess, let signingInfo else { return false }
+
+        let dictionary = signingInfo as NSDictionary
+        guard let certificates = dictionary[kSecCodeInfoCertificates] as? [SecCertificate] else {
+            return false
+        }
+        return !certificates.isEmpty
+    }()
 
     private static func decodeClaudeKeychainBlob(_ data: Data) -> [String: Any]? {
         try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -302,8 +358,9 @@ enum ClaudeCredentials {
         task.standardError = Pipe()
         do {
             try task.run()
-            task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            task.waitUntilExit()
+            guard task.terminationStatus == 0 else { return nil }
             guard let raw = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                   let jsonData = raw.data(using: .utf8) else { return nil }
