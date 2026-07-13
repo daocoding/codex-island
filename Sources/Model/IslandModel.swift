@@ -16,11 +16,11 @@ final class IslandModel: ObservableObject {
     /// Side extension that houses each brand logo in compact state.
     let tabWidth: CGFloat = 38
 
-    /// Per-side inner rail for the always-visible core usage metrics. Each
-    /// rail sits between its outer provider logo and the physical notch. The
-    /// Claude rail fits three ring + reset cells without compressing their
-    /// labels; Codex uses the same width so the silhouette remains centered.
-    let pillSlotWidth: CGFloat = 196
+    /// Inner rails are intentionally asymmetric: Claude needs three 56pt
+    /// ring cells while Codex needs one. `horizontalCenterOffset` keeps the
+    /// physical notch anchored despite the unequal silhouette extensions.
+    let claudeRailWidth: CGFloat = 176
+    let codexRailWidth: CGFloat = 56
 
     /// Visible expanded panel width.
     private let expandedWidth: CGFloat = 800
@@ -47,6 +47,10 @@ final class IslandModel: ObservableObject {
     private var overviewDayDetailVisible = false
 
     private var subs: Set<AnyCancellable> = []
+
+    var horizontalCenterOffset: CGFloat {
+        state == .peek ? horizontalLayout.peekCenterOffset : 0
+    }
 
     init(notch: NotchInfo) {
         self.rawNotch = notch
@@ -164,12 +168,12 @@ final class IslandModel: ObservableObject {
         switch state {
         case .compact:
             size = CGSize(
-                width: notch.width + tabWidth * 2,
+                width: horizontalLayout.compactWidth,
                 height: notch.height
             )
         case .peek:
             size = CGSize(
-                width: notch.width + tabWidth * 2 + pillSlotWidth * 2,
+                width: horizontalLayout.peekWidth,
                 height: notch.height
             )
         case .expanded:
@@ -178,6 +182,15 @@ final class IslandModel: ObservableObject {
                 height: expandedContentHeight + notch.height
             )
         }
+    }
+
+    private var horizontalLayout: IslandHorizontalLayout {
+        IslandHorizontalLayout(
+            notchWidth: notch.width,
+            tabWidth: tabWidth,
+            claudeRailWidth: claudeRailWidth,
+            codexRailWidth: codexRailWidth
+        )
     }
 
     private var expandedContentHeight: CGFloat {

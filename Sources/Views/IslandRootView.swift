@@ -96,7 +96,7 @@ struct IslandRootView: View {
                                 provider: .claude,
                                 metricsVisible: pillsVisible
                             )
-                            .frame(width: model.pillSlotWidth, alignment: .leading)
+                            .frame(width: model.claudeRailWidth, alignment: .leading)
                         }
                         .padding(.top, max(0, (model.notch.height - 28) / 2))
                     }
@@ -108,7 +108,7 @@ struct IslandRootView: View {
                                 provider: .codex,
                                 metricsVisible: pillsVisible
                             )
-                            .frame(width: model.pillSlotWidth, alignment: .trailing)
+                            .frame(width: model.codexRailWidth, alignment: .trailing)
                             Color.clear
                                 .frame(width: model.tabWidth)
                         }
@@ -224,6 +224,7 @@ struct IslandRootView: View {
                         }
                     }
                 }
+                .offset(x: model.horizontalCenterOffset)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -497,7 +498,7 @@ private struct CoreUsageOverlay: View {
     @ObservedObject private var usageStore = UsageStore.shared
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             let items = metrics
             ForEach(items.indices, id: \.self) { index in
                 CoreUsageMetric(
@@ -599,14 +600,15 @@ private struct CoreUsageMetric: View {
                     Text(label)
                         .font(.system(size: 8, weight: .semibold))
                         .foregroundStyle(tint.opacity(0.82))
+                        .minimumScaleFactor(0.6)
                     Text(resetText(at: context.date))
                         .font(.system(size: 7, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.46))
                 }
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .frame(width: 24, alignment: .leading)
             }
-            .frame(minWidth: 56, minHeight: 28, alignment: .leading)
+            .frame(width: 56, height: 28, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(label)
             .accessibilityValue(accessibilityValue(value, at: context.date))

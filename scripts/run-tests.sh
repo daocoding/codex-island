@@ -25,6 +25,7 @@ CLAUDE_CODE_OAUTH_TOKEN="test-stub-token" "$OUT_DIR/resolve-usage-tests"
 swiftc \
   -parse-as-library \
   -o "$OUT_DIR/notch-height-tests" \
+  Sources/Model/IslandHorizontalLayout.swift \
   Sources/Model/NotchInfo.swift \
   Sources/Model/IslandSpacingStore.swift \
   Sources/Model/PreferenceStorage.swift \

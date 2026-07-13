@@ -51,6 +51,25 @@ struct NotchHeightTests {
             "nothing measurable: 24pt default"
         )
 
+        // Measured M5 14-inch notch plus the minimal persistent ring rails:
+        // three 56pt Claude cells with 4pt gaps, and one 56pt Codex cell.
+        // The silhouette must grow asymmetrically without moving the hardware
+        // notch away from screen center.
+        let layout = IslandHorizontalLayout(
+            notchWidth: 185,
+            tabWidth: 38,
+            claudeRailWidth: 176,
+            codexRailWidth: 56
+        )
+        expect(layout.compactWidth == 261, "compact width is notch plus two logo tabs")
+        expect(layout.peekWidth == 493, "minimal ring layout occupies 493pt")
+        expect(layout.peekCenterOffset == -60, "asymmetric peek shifts silhouette 60pt left")
+        let notchCenter = layout.peekCenterOffset
+            - layout.peekWidth / 2
+            + layout.leftPeekWidth
+            + layout.notchWidth / 2
+        expect(abs(notchCenter) < 0.001, "asymmetric rails keep hardware notch centered")
+
         if failures > 0 {
             print("\(failures) failure(s)")
             exit(1)
