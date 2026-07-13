@@ -115,6 +115,7 @@
 "Target display" = "目标屏幕";
 "Target Display" = "目标屏幕";
 "Tint the island and pulse the peek pill when 5-hour usage nears your limit." = "当 5 小时用量接近限额时，为岛和预览胶囊显示提醒效果。";
+"Tint the island and pulse the peek pill when tracked usage nears your limit." = "当当前用量窗口接近限额时，为岛和预览胶囊显示提醒效果。";
 "Tip: Command-click to cycle visualization" = "提示：Command 点击可切换可视化";
 "Today" = "今天";
 "Token counting" = "Token 统计";
@@ -141,6 +142,11 @@
 "%@: %d percent of 5-hour window used" = "%@：已使用 5 小时窗口的 %d%%";
 "%@: %d percent of 5-hour window used, %@" = "%@：已使用 5 小时窗口的 %d%%，%@";
 "%@: no data for 5-hour window" = "%@：5 小时窗口暂无数据";
+"%@: %d percent of %@ window remaining" = "%1$@：%3$@窗口剩余 %2$d%%";
+"%@: %d percent of %@ window remaining, %@" = "%1$@：%3$@窗口剩余 %2$d%%，%4$@";
+"%@: %d percent of %@ window used" = "%1$@：已使用%3$@窗口的 %2$d%%";
+"%@: %d percent of %@ window used, %@" = "%1$@：已使用%3$@窗口的 %2$d%%，%4$@";
+"%@: no data for %@ window" = "%1$@：%2$@窗口暂无数据";
 "Click to expand. Command-click to cycle visualization." = "点击展开。Command 点击可切换可视化。";
 "Command-click to cycle visualization." = "Command 点击可切换可视化。";
 "Hover to peek usage. Click to expand. Command-click to cycle visualization." = "悬停预览用量。点击展开。Command 点击可切换可视化。";

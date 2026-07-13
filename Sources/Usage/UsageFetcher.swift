@@ -32,11 +32,7 @@ enum UsageFetcher {
                   let rl = obj["rate_limit"] as? [String: Any] else {
                 return errorPair("parse error")
             }
-            return AppUsage(
-                fiveHour: parseCodexWindow(rl["primary_window"]),
-                weekly: parseCodexWindow(rl["secondary_window"]),
-                plan: obj["plan_type"] as? String
-            )
+            return parseCodexUsage(rl, plan: obj["plan_type"] as? String)
         } catch {
             return errorPair(error.localizedDescription)
         }
@@ -58,11 +54,62 @@ enum UsageFetcher {
         return token
     }
 
-    private static func parseCodexWindow(_ obj: Any?) -> WindowUsage {
-        guard let d = obj as? [String: Any] else { return .unknown }
-        let used = (d["used_percent"] as? Double) ?? 0
-        let resetAt = (d["reset_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
-        return WindowUsage(usedPercent: used / 100, resetAt: resetAt, error: nil)
+    private struct ParsedCodexWindow {
+        let usage: WindowUsage
+        let limitSeconds: Int?
+    }
+
+    /// Codex historically returned a 5h `primary_window` plus a weekly
+    /// `secondary_window`. The endpoint now also returns weekly-only plans,
+    /// with the 7d bucket in `primary_window`. Classify by the server's
+    /// `limit_window_seconds` instead of assigning meaning from key order.
+    static func parseCodexUsage(_ rateLimit: [String: Any], plan: String? = nil) -> AppUsage {
+        let primary = parseCodexWindow(rateLimit["primary_window"])
+        let secondary = parseCodexWindow(rateLimit["secondary_window"])
+        let windows = [primary, secondary].compactMap { $0 }
+
+        // Preserve the legacy mapping for older responses that do not expose
+        // durations. This keeps existing accounts working during a staggered
+        // server rollout.
+        guard windows.contains(where: { $0.limitSeconds != nil }) else {
+            return AppUsage(
+                fiveHour: primary?.usage ?? .unknown,
+                weekly: secondary?.usage ?? .unknown,
+                plan: plan
+            )
+        }
+
+        let short = windows.first { ($0.limitSeconds ?? 0) < 86_400 }
+        let weekly = windows.first { ($0.limitSeconds ?? 0) >= 86_400 }
+        return AppUsage(
+            fiveHour: short?.usage ?? .unknown,
+            weekly: weekly?.usage ?? .unknown,
+            plan: plan,
+            shortWindowLabel: short.flatMap { durationLabel(seconds: $0.limitSeconds) },
+            weeklyWindowLabel: weekly.flatMap { durationLabel(seconds: $0.limitSeconds) }
+        )
+    }
+
+    private static func parseCodexWindow(_ obj: Any?) -> ParsedCodexWindow? {
+        guard let d = obj as? [String: Any] else { return nil }
+        let used = (d["used_percent"] as? NSNumber)?.doubleValue ?? 0
+        let resetAt = (d["reset_at"] as? NSNumber).map {
+            Date(timeIntervalSince1970: $0.doubleValue)
+        }
+        let limitSeconds = (d["limit_window_seconds"] as? NSNumber)?.intValue
+        return ParsedCodexWindow(
+            usage: WindowUsage(usedPercent: used / 100, resetAt: resetAt, error: nil),
+            limitSeconds: limitSeconds
+        )
+    }
+
+    private static func durationLabel(seconds: Int?) -> String? {
+        guard let seconds, seconds > 0 else { return nil }
+        if seconds == 7 * 86_400 { return "week" }
+        if seconds.isMultiple(of: 7 * 86_400) { return "\(seconds / (7 * 86_400))w" }
+        if seconds.isMultiple(of: 86_400) { return "\(seconds / 86_400)d" }
+        if seconds.isMultiple(of: 3_600) { return "\(seconds / 3_600)h" }
+        return "\(seconds / 60)m"
     }
 
     static func fetchCodexResetCredits() async -> CodexResetCredits? {

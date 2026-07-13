@@ -237,7 +237,7 @@ struct SettingsView: View {
     }
 
     /// Approaching-limit alerts. Default off — opt-in via the toggle.
-    /// When on, the silhouette glow tints amber/red while a tracked 5h
+    /// When on, the silhouette glow tints amber/red while a tracked provider
     /// window is at or above the configured percentages, and the peek
     /// pill auto-extends once when a window first crosses each threshold.
     private var alertsSection: some View {
@@ -245,7 +245,7 @@ struct SettingsView: View {
             sectionLabel("Alerts")
             SettingsRow(
                 title: "Approaching-limit alerts",
-                subtitle: "Tint the island and pulse the peek pill when 5-hour usage nears your limit."
+                subtitle: "Tint the island and pulse the peek pill when tracked usage nears your limit."
             ) {
                 SettingsToggle(isOn: alertPrefs.enabled) {
                     // withAnimation here so the threshold rows + Preview row
@@ -780,7 +780,10 @@ struct SettingsView: View {
             guard let updated = usage.lastUpdated else { return L10n.tr("idle") }
             return L10n.tr("synced %@", Self.relativeFormatter.localizedString(for: updated, relativeTo: Date()))
         }()
-        let nums = "\(windowCaption(u.fiveHour)) / \(windowCaption(u.weekly))"
+        var windows: [WindowUsage] = []
+        if u.shortWindowLabel != nil { windows.append(u.fiveHour) }
+        if u.weeklyWindowLabel != nil { windows.append(u.weekly) }
+        let nums = windows.map(windowCaption).joined(separator: " / ")
         return "\(synced) · \(nums)"
     }
 

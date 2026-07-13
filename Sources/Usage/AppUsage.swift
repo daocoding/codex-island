@@ -28,6 +28,11 @@ struct WindowUsage {
 struct AppUsage {
     var fiveHour: WindowUsage
     var weekly: WindowUsage
+    /// Server-derived labels for the two display slots. Claude still uses
+    /// the stable 5h/week pair, while Codex can now omit the short window
+    /// entirely and report its weekly bucket as `primary_window`.
+    var shortWindowLabel: String?
+    var weeklyWindowLabel: String?
     /// Provider-reported plan tier — Claude's `subscriptionType` (free/pro/max)
     /// or Codex's `plan_type` (free/plus/pro). nil when unknown.
     var plan: String?
@@ -43,14 +48,29 @@ struct AppUsage {
         fiveHour: WindowUsage,
         weekly: WindowUsage,
         plan: String? = nil,
+        shortWindowLabel: String? = "5h",
+        weeklyWindowLabel: String? = "week",
         scopedWeekly: WindowUsage? = nil,
         scopedLabel: String? = nil
     ) {
         self.fiveHour = fiveHour
         self.weekly = weekly
         self.plan = plan
+        self.shortWindowLabel = shortWindowLabel
+        self.weeklyWindowLabel = weeklyWindowLabel
         self.scopedWeekly = scopedWeekly
         self.scopedLabel = scopedLabel
+    }
+
+    /// Window used by the compact peek pill and approaching-limit alerts.
+    /// Prefer the short bucket when one exists; weekly-only Codex plans fall
+    /// back to the weekly bucket instead of showing a fabricated 5h value.
+    var headlineWindow: WindowUsage {
+        shortWindowLabel == nil ? weekly : fiveHour
+    }
+
+    var headlineWindowLabel: String {
+        shortWindowLabel ?? weeklyWindowLabel ?? "usage"
     }
 
     static let empty = AppUsage(fiveHour: .unknown, weekly: .unknown)

@@ -115,6 +115,7 @@
 "Target display" = "Target display";
 "Target Display" = "Target Display";
 "Tint the island and pulse the peek pill when 5-hour usage nears your limit." = "Tint the island and pulse the peek pill when 5-hour usage nears your limit.";
+"Tint the island and pulse the peek pill when tracked usage nears your limit." = "Tint the island and pulse the peek pill when tracked usage nears your limit.";
 "Tip: Command-click to cycle visualization" = "Tip: Command-click to cycle visualization";
 "Today" = "Today";
 "Token counting" = "Token counting";
@@ -141,6 +142,11 @@
 "%@: %d percent of 5-hour window used" = "%@: %d percent of 5-hour window used";
 "%@: %d percent of 5-hour window used, %@" = "%@: %d percent of 5-hour window used, %@";
 "%@: no data for 5-hour window" = "%@: no data for 5-hour window";
+"%@: %d percent of %@ window remaining" = "%@: %d percent of %@ window remaining";
+"%@: %d percent of %@ window remaining, %@" = "%@: %d percent of %@ window remaining, %@";
+"%@: %d percent of %@ window used" = "%@: %d percent of %@ window used";
+"%@: %d percent of %@ window used, %@" = "%@: %d percent of %@ window used, %@";
+"%@: no data for %@ window" = "%@: no data for %@ window";
 "Click to expand. Command-click to cycle visualization." = "Click to expand. Command-click to cycle visualization.";
 "Command-click to cycle visualization." = "Command-click to cycle visualization.";
 "Hover to peek usage. Click to expand. Command-click to cycle visualization." = "Hover to peek usage. Click to expand. Command-click to cycle visualization.";

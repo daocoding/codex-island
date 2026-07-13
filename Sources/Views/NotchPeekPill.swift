@@ -5,7 +5,7 @@ import SwiftUI
 /// directly on the dark silhouette, like the logos.
 ///
 /// Renders one of three states:
-///   • value:    "32% · 2h"  (active countdown) or "0% · 5h" (window-length
+///   • value:    "32% · 2h" (active countdown) or "0% · week" (window-label
 ///               fallback at lower opacity when no active resetAt is known)
 ///   • loading:  small pulsing dot (only when `loading && usedPercent == 0`)
 ///   • errored:  "—%"         (when error is set and we have no value)
@@ -16,6 +16,7 @@ struct NotchPeekPill: View {
     let loading: Bool
     let tint: Color
     let alignment: HorizontalAlignment
+    let fallbackLabel: String
     var severity: AlertEngine.Severity = .none
     @ObservedObject private var usageDisplay = UsageDisplayModeStore.shared
 
@@ -70,11 +71,10 @@ struct NotchPeekPill: View {
             .foregroundStyle(.white.opacity(0.40))
     }
 
-    /// Lower opacity on the fallback differentiates a passive "5-hour
-    /// window" label from an active "5h until reset" countdown — same
-    /// glyph shape, weaker visual presence.
+    /// Lower opacity on the fallback differentiates a passive window label
+    /// from an active reset countdown.
     private var resetLabel: some View {
-        Text(resetText ?? "5h")
+        Text(resetText ?? fallbackLabel)
             .font(Typography.bodyNumber)
             .foregroundStyle(.white.opacity(resetText == nil ? 0.45 : 0.70))
     }
@@ -101,10 +101,9 @@ struct NotchPeekPill: View {
     }
 
     private var showDash: Bool {
-        // "no data" is our sentinel for "API returned null for this window"
-        // (typically a fresh 5h period before the first OAuth call lands).
-        // Treat it as a passive non-error so the pill still renders with
-        // the 5h window-length fallback instead of collapsing to "—%".
+        // "no data" is our sentinel for "API returned null for this window".
+        // Treat it as a passive non-error so the pill still renders its
+        // window label instead of collapsing to "—%".
         guard let err = usage.error, err != "no data" else { return false }
         return usage.usedPercent == 0
     }

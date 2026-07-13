@@ -94,12 +94,16 @@ struct ChartsBlock: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 18) {
-                ChartTile(style: style, color: color, labelKey: "5h",
-                          window: usage.fiveHour, seed: seed,
-                          provider: provider, windowKind: .fiveHour)
-                ChartTile(style: style, color: color, labelKey: "week",
-                          window: usage.weekly, seed: seed + 1,
-                          provider: provider, windowKind: .weekly)
+                if let label = usage.shortWindowLabel {
+                    ChartTile(style: style, color: color, labelKey: label,
+                              window: usage.fiveHour, seed: seed,
+                              provider: provider, windowKind: .fiveHour)
+                }
+                if let label = usage.weeklyWindowLabel {
+                    ChartTile(style: style, color: color, labelKey: label,
+                              window: usage.weekly, seed: seed + 1,
+                              provider: provider, windowKind: .weekly)
+                }
                 // Model-scoped weekly limit (Claude Max's Fable bucket).
                 // Server-driven: the tile and its label only exist when the
                 // usage endpoint reports a scoped limit for this account.

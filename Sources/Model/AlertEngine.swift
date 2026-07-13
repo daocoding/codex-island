@@ -3,7 +3,7 @@ import Combine
 
 /// Drives the approaching-limit alert state. Subscribes to `UsageStore`
 /// publishers + the alert/visibility preference stores, derives a current
-/// severity, and emits one-shot `pulseEvent`s when a tracked 5-hour window
+/// severity, and emits one-shot `pulseEvent`s when a tracked headline window
 /// first crosses a threshold inside its current reset cycle.
 ///
 /// The threshold-crossing judgment lives in the `AlertDecision` enum below
@@ -46,7 +46,7 @@ final class AlertEngine: ObservableObject {
         let lines: [PulseLine]
     }
 
-    /// Highest severity across visible 5h windows currently at/above their
+    /// Highest severity across visible headline windows currently at/above their
     /// respective threshold. Drives the silhouette glow color.
     @Published private(set) var severity: Severity = .none
 
@@ -119,7 +119,7 @@ final class AlertEngine: ObservableObject {
             AlertDecision.WindowInput(
                 provider: .codex,
                 visible: visibility.codexVisible,
-                window: usage.codex.fiveHour
+                window: usage.codex.headlineWindow
             ),
         ]
 
@@ -324,4 +324,3 @@ enum AlertDecision {
         return CrossingsEvalResult(next: next, pulse: pulse)
     }
 }
-

@@ -187,6 +187,46 @@ struct ResolveUsageTests {
         expect(legacy?.label == "Opus", "T6 legacy seven_day_opus falls back with Opus label")
         expect(legacy.map { abs($0.window.usedPercent - 0.4) < 0.0001 } == true, "T6 legacy percent normalizes")
 
+        // T7 — Codex window classification. Plus accounts can now return a
+        // weekly-only bucket as primary_window, so key order no longer tells
+        // us which duration is being reported.
+        let weeklyOnly = UsageFetcher.parseCodexUsage([
+            "allowed": true,
+            "primary_window": [
+                "used_percent": 52,
+                "limit_window_seconds": 604_800,
+                "reset_at": 1_784_487_940,
+            ],
+            "secondary_window": NSNull(),
+        ], plan: "plus")
+        expect(weeklyOnly.shortWindowLabel == nil, "T7 weekly-only Codex omits the short tile")
+        expect(weeklyOnly.weeklyWindowLabel == "week", "T7 7d Codex window gets the week label")
+        expect(abs(weeklyOnly.weekly.usedPercent - 0.52) < 0.0001, "T7 weekly-only usage maps to weekly")
+        expect(weeklyOnly.headlineWindow.percentInt == 52, "T7 weekly-only usage drives the peek headline")
+
+        let dualWindow = UsageFetcher.parseCodexUsage([
+            "primary_window": [
+                "used_percent": 21,
+                "limit_window_seconds": 18_000,
+                "reset_at": 1_784_000_000,
+            ],
+            "secondary_window": [
+                "used_percent": 34,
+                "limit_window_seconds": 604_800,
+                "reset_at": 1_784_500_000,
+            ],
+        ])
+        expect(dualWindow.shortWindowLabel == "5h", "T7 legacy 5h duration keeps the 5h label")
+        expect(dualWindow.weeklyWindowLabel == "week", "T7 dual response keeps the week label")
+        expect(dualWindow.headlineWindow.percentInt == 21, "T7 short window remains the preferred headline")
+
+        let durationless = UsageFetcher.parseCodexUsage([
+            "primary_window": ["used_percent": 13],
+            "secondary_window": ["used_percent": 47],
+        ])
+        expect(durationless.shortWindowLabel == "5h" && durationless.weeklyWindowLabel == "week",
+               "T7 durationless response preserves legacy key mapping")
+
         // The store and views match these exact strings; a reword is a
         // breaking change for them, not a copy edit.
         expect(ClaudeCredentials.rateLimitedMessage == "rate limited", "rateLimitedMessage literal is stable")
