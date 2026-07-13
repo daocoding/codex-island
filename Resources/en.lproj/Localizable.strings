@@ -158,6 +158,7 @@
 "Usage display" = "Usage display";
 "Used" = "Used";
 "Keep the percentage and time remaining visible without hovering." = "Keep the percentage and time remaining visible without hovering.";
+"Keep the four core usage percentages visible without hovering." = "Keep the four core usage percentages visible without hovering.";
 "Inject test percentages. Visible only when launched with CODEXISLAND_DEBUG=1." = "Inject test percentages. Visible only when launched with CODEXISLAND_DEBUG=1.";
 "Preview" = "Preview";
 "resets in %d hours" = "resets in %d hours";

@@ -1,12 +1,11 @@
 import Foundation
 
-/// User preference for keeping the peek-state percentage pills visible at
-/// rest, without requiring a hover.
+/// User preference for keeping the core usage metrics visible at rest,
+/// without requiring a hover.
 ///
-/// Default off: the pills only appear during hover/peek, then collapse with
-/// the silhouette back to compact. With this on, the island launches into
-/// `.peek` and stays there — hover-out keeps the pill visible, expanded-out
-/// returns to peek instead of compact.
+/// Default on: persistent usage is the product's primary glanceable value;
+/// click remains the path to the detailed panel. Users can still opt into the
+/// smaller logo-only rest state from Settings.
 @MainActor
 final class AlwaysShowUsageStore: ObservableObject {
     static let shared = AlwaysShowUsageStore()
@@ -18,9 +17,6 @@ final class AlwaysShowUsageStore: ObservableObject {
     }
 
     private init() {
-        // UserDefaults.bool returns false for missing keys, which matches our
-        // intended default (off → preserves the existing hover-only behavior
-        // for users who upgrade).
-        self.enabled = UserDefaults.standard.bool(forKey: Self.key)
+        self.enabled = Pref.seededBool(key: Self.key, default: true)
     }
 }

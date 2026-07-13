@@ -216,7 +216,7 @@ struct SettingsView: View {
             }
             SettingsRow(
                 title: "Always show usage",
-                subtitle: "Keep the percentage and time remaining visible without hovering."
+                subtitle: "Keep the four core usage percentages visible without hovering."
             ) {
                 SettingsToggle(isOn: alwaysShow.enabled) {
                     alwaysShow.enabled.toggle()

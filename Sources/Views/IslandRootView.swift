@@ -88,25 +88,25 @@ struct IslandRootView: View {
                     )
                 }
                 .overlay(alignment: .topLeading) {
-                    // Pill lives in the new outboard slot (the 78pt the
-                    // silhouette grew on entering peek). 14pt inset from the
-                    // silhouette's new leading edge keeps it visually
-                    // breathing inside the rounded corner.
                     if model.state != .compact {
-                        PeekPillOverlay(
+                        CoreUsageOverlay(
                             provider: .claude,
-                            topPadding: max(0, (model.notch.height - 14) / 2),
-                            pillsVisible: pillsVisible
+                            metricsVisible: pillsVisible
                         )
+                        .padding(.horizontal, 8)
+                        .frame(width: model.pillSlotWidth, alignment: .trailing)
+                        .padding(.top, max(0, (model.notch.height - 28) / 2))
                     }
                 }
                 .overlay(alignment: .topTrailing) {
                     if model.state != .compact {
-                        PeekPillOverlay(
+                        CoreUsageOverlay(
                             provider: .codex,
-                            topPadding: max(0, (model.notch.height - 14) / 2),
-                            pillsVisible: pillsVisible
+                            metricsVisible: pillsVisible
                         )
+                        .padding(.horizontal, 8)
+                        .frame(width: model.pillSlotWidth, alignment: .leading)
+                        .padding(.top, max(0, (model.notch.height - 28) / 2))
                     }
                 }
                 .overlay(alignment: .bottomLeading) {
@@ -486,75 +486,60 @@ private struct LogoOverlay: View {
     }
 }
 
-/// Per-provider peek pill overlay. Observes ProviderVisibilityStore,
-/// UsageStore, and AlertEngine — but not CostStore, so a Codex log
-/// scan completing doesn't re-render the pill that has no cost data
-/// in it.
-private struct PeekPillOverlay: View {
+/// Always-visible core metrics. Claude contributes 5h/week/Fable and Codex
+/// contributes its weekly bucket, giving the notch four useful readings at
+/// rest while the adjacent logos preserve provider grouping.
+private struct CoreUsageOverlay: View {
     let provider: AlertEngine.Provider
-    let topPadding: CGFloat
-    let pillsVisible: Bool
+    let metricsVisible: Bool
 
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
     @ObservedObject private var usageStore = UsageStore.shared
-    @ObservedObject private var alerts = AlertEngine.shared
 
     var body: some View {
-        let window = currentWindow
-        let windowLabel = currentWindowLabel
-        NotchPeekPill(
-            usage: window,
-            loading: usageStore.loading,
-            tint: tint,
-            alignment: provider == .claude ? .leading : .trailing,
-            fallbackLabel: windowLabel,
-            severity: severity
-        )
-        .padding(provider == .claude ? .leading : .trailing, 14)
-        .padding(.top, topPadding)
-        // Two opacity bindings stack:
-        //   - `pillsVisible` is the peek lifecycle (hover-in / hover-out).
-        //   - `isVisible` is the user's settings toggle.
-        // Both must be 1 to render. Animating `isVisible` with the same
-        // openMorph spring as the panel layout keeps the toggle fade in
-        // lockstep with the rest of the chrome.
-        .opacity((pillsVisible && isVisible) ? 1 : 0)
+        HStack(spacing: 6) {
+            let items = metrics
+            ForEach(items.indices, id: \.self) { index in
+                CoreUsageMetric(
+                    label: items[index].label,
+                    window: items[index].window,
+                    tint: tint
+                )
+            }
+        }
+        .opacity((metricsVisible && isVisible) ? 1 : 0)
         .animation(.openMorph, value: isVisible)
-        .offset(x: pillsVisible ? 0 : (provider == .claude ? -6 : 6))
+        .offset(x: metricsVisible ? 0 : (provider == .claude ? -6 : 6))
         .allowsHitTesting(false)
-        .accessibilityLabel(peekLabel(
-            for: window,
-            provider: providerLabel,
-            windowLabel: windowLabel
-        ))
-        // Mirror the visual opacity gate exactly — both `pillsVisible` and
-        // `isVisible` must be true for the pill to render. Keying the
-        // accessibility hide on only `isVisible` lets VoiceOver reach a
-        // pill that is visually invisible during the peek-out lifecycle.
-        .accessibilityHidden(!(pillsVisible && isVisible))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(providerLabel)
+        .accessibilityHidden(!(metricsVisible && isVisible))
     }
 
     private var isVisible: Bool {
         visibility.effectiveVisible(provider: provider)
     }
 
-    private var currentUsage: AppUsage {
+    private var usage: AppUsage {
         switch provider {
         case .claude: return usageStore.claude
         case .codex:  return usageStore.codex
         }
     }
 
-    private var currentWindow: WindowUsage { currentUsage.headlineWindow }
-
-    private var currentWindowLabel: String {
-        L10n.tr(currentUsage.headlineWindowLabel)
-    }
-
-    private var severity: AlertEngine.Severity {
+    private var metrics: [(label: String, window: WindowUsage)] {
         switch provider {
-        case .claude: return alerts.claudeSeverity
-        case .codex:  return alerts.codexSeverity
+        case .claude:
+            return [
+                (L10n.tr("5h"), usage.fiveHour),
+                (L10n.tr("week"), usage.weekly),
+                (usage.scopedLabel ?? "Fable", usage.scopedWeekly ?? .unknown),
+            ]
+        case .codex:
+            if let label = usage.weeklyWindowLabel {
+                return [(L10n.tr(label), usage.weekly)]
+            }
+            return [(L10n.tr(usage.headlineWindowLabel), usage.headlineWindow)]
         }
     }
 
@@ -571,29 +556,45 @@ private struct PeekPillOverlay: View {
         case .codex:  return "Codex"
         }
     }
+}
 
-    private func peekLabel(
-        for window: WindowUsage,
-        provider: String,
-        windowLabel: String
-    ) -> String {
+private struct CoreUsageMetric: View {
+    let label: String
+    let window: WindowUsage
+    let tint: Color
+
+    @ObservedObject private var usageDisplay = UsageDisplayModeStore.shared
+
+    var body: some View {
+        let value = window.displayedFraction(mode: usageDisplay.mode) * 100
+        VStack(spacing: -1) {
+            Text(label)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(tint.opacity(0.78))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(valueText(value))
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(valueColor(value))
+                .numericTransition(value: value)
+                .animation(.strongEaseOut, value: value)
+        }
+        .frame(minWidth: 28, minHeight: 28)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(valueText(value))
+    }
+
+    private func valueText(_ value: Double) -> String {
+        if window.error != nil && window.usedPercent == 0 { return "—" }
+        return "\(Int(value.rounded()))%"
+    }
+
+    private func valueColor(_ value: Double) -> Color {
         if window.error != nil && window.usedPercent == 0 {
-            return L10n.tr("%@: no data for %@ window", provider, windowLabel)
+            return .white.opacity(0.35)
         }
-        let mode = UsageDisplayModeStore.shared.mode
-        let pct = window.displayedPercentInt(mode: mode)
-        guard let resetAt = window.resetAt else {
-            return mode == .used
-                ? L10n.tr("%@: %d percent of %@ window used", provider, pct, windowLabel)
-                : L10n.tr("%@: %d percent of %@ window remaining", provider, pct, windowLabel)
-        }
-        let remaining = max(0, resetAt.timeIntervalSinceNow)
-        let resetPhrase: String = remaining >= 3600
-            ? L10n.tr("resets in %d hours", Int((remaining / 3600).rounded(.down)))
-            : L10n.tr("resets in %d minutes", max(1, Int((remaining / 60).rounded(.down))))
-        return mode == .used
-            ? L10n.tr("%@: %d percent of %@ window used, %@", provider, pct, windowLabel, resetPhrase)
-            : L10n.tr("%@: %d percent of %@ window remaining, %@", provider, pct, windowLabel, resetPhrase)
+        return UrgencyColor.value(value, mode: usageDisplay.mode)
     }
 }
 
