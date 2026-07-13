@@ -229,6 +229,17 @@ Smoke test the native app:
 test harnesses. `verify.sh` builds the app, launches the binary for one second,
 then kills it if it is still alive.
 
+For a durable local install that can launch at login:
+
+```sh
+./scripts/install-local.sh
+```
+
+This builds, ad-hoc signs, atomically replaces `/Applications/CodexIsland.app`,
+and relaunches it. An enabled Launch at Login registration is refreshed once
+for each newly installed binary; replaceable apps under `build/` are never
+registered as login targets.
+
 ## Release
 
 Package a DMG:

@@ -126,6 +126,14 @@ open build/CodexIsland.app
 
 脚本会构建应用，启动二进制 1 秒，如果它仍在运行就结束进程。
 
+若要安装一份可可靠登录启动的本地构建：
+
+```sh
+./scripts/install-local.sh
+```
+
+脚本会构建并 ad-hoc 签名应用，以原子方式替换 `/Applications/CodexIsland.app`，然后重新启动。已启用的登录项会在每次安装新二进制后刷新；可随时被替换的 `build/` 目录不会注册为登录启动目标。
+
 ## 发布
 
 打包 DMG：

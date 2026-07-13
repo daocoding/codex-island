@@ -20,6 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        // Keep an enabled login item attached to the durable Applications
+        // install after a local build replaces that bundle. Development
+        // binaries under build/ intentionally never become login targets.
+        LaunchAtLoginStore.shared.reconcileRegistrationIfNeeded()
+
         island = IslandWindowController()
         island?.show()
 
