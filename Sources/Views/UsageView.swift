@@ -94,24 +94,34 @@ struct ChartsBlock: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 18) {
-                if let label = usage.shortWindowLabel {
-                    ChartTile(style: style, color: color, labelKey: label,
+                if provider == .claude {
+                    // Keep Claude's fixed three-slot tree independent of
+                    // Codex's adaptive window shape. In particular, Fable is
+                    // a separate server-scoped weekly bucket and must remain
+                    // visible whenever Anthropic reports it.
+                    ChartTile(style: style, color: color, labelKey: "5h",
                               window: usage.fiveHour, seed: seed,
                               provider: provider, windowKind: .fiveHour)
-                }
-                if let label = usage.weeklyWindowLabel {
-                    ChartTile(style: style, color: color, labelKey: label,
+                    ChartTile(style: style, color: color, labelKey: "week",
                               window: usage.weekly, seed: seed + 1,
                               provider: provider, windowKind: .weekly)
-                }
-                // Model-scoped weekly limit (Claude Max's Fable bucket).
-                // Server-driven: the tile and its label only exist when the
-                // usage endpoint reports a scoped limit for this account.
-                if let scoped = usage.scopedWeekly {
-                    ChartTile(style: style, color: color,
-                              labelKey: usage.scopedLabel ?? "model",
-                              window: scoped, seed: seed + 4,
-                              provider: provider, windowKind: .scopedWeekly)
+                    if let scoped = usage.scopedWeekly {
+                        ChartTile(style: style, color: color,
+                                  labelKey: usage.scopedLabel ?? "model",
+                                  window: scoped, seed: seed + 4,
+                                  provider: provider, windowKind: .scopedWeekly)
+                    }
+                } else {
+                    if let label = usage.shortWindowLabel {
+                        ChartTile(style: style, color: color, labelKey: label,
+                                  window: usage.fiveHour, seed: seed,
+                                  provider: provider, windowKind: .fiveHour)
+                    }
+                    if let label = usage.weeklyWindowLabel {
+                        ChartTile(style: style, color: color, labelKey: label,
+                                  window: usage.weekly, seed: seed + 1,
+                                  provider: provider, windowKind: .weekly)
+                    }
                 }
             }
             if needsReauth && ClaudeCredentials.canPromptReauth() {
