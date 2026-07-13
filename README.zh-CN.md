@@ -8,7 +8,7 @@
 
 > 你的 AI 用量限额，住在 Mac 刘海里。
 
-CodexIsland 是一个原生 macOS 悬浮层，把 MacBook 刘海变成类似 Dynamic Island 的实时用量状态。它支持 Claude Code 和 Codex，用悬停预览各服务当前的主要用量窗口，用点击展开完整面板，展示服务端返回的用量窗口、重置时间、图表样式，以及从本地会话日志估算的美元成本和 token 吞吐量。
+CodexIsland 是一个原生 macOS 悬浮层，把 MacBook 刘海变成类似 Dynamic Island 的实时用量状态。它支持 Claude Code 和 Codex，在两个服务 logo 之间常驻显示四项核心用量及其重置倒计时；点击可展开完整面板，查看服务端返回的用量窗口、图表样式，以及从本地会话日志估算的美元成本和 token 吞吐量。
 
 应用免费、开源、未签名，并且以本地优先为原则。它读取 Claude Code / Claude Desktop 和 Codex 已经写入本机的凭据，只调用对应服务自己的用量接口。
 
@@ -17,7 +17,7 @@ CodexIsland 是一个原生 macOS 悬浮层，把 MacBook 刘海变成类似 Dyn
 - **两个服务，自适应窗口。** 在一个面板里显示 Claude 5 小时 + 7 天，以及 Codex 当前返回的用量窗口，包括只有周窗口的 Codex 套餐。
 - **贴合刘海的悬浮层。** 紧凑状态是一个对齐物理刘海的黑色胶囊；没有刘海的 Mac 会退回到菜单栏胶囊。
 - **可选的仅 logo 状态。** 关闭“始终显示用量”可获得最小轮廓；悬停时仍会展开显示核心用量。
-- **四项核心用量常驻。** 默认启用“始终显示用量”，在服务 logo 旁持续显示 Claude 5 小时、周、Fable 与 Codex 周用量；点击后再展开完整详情。
+- **四项核心用量常驻。** 默认启用“始终显示用量”，在两个服务 logo 之间持续显示 Claude 5 小时、周、Fable 与 Codex 周用量，并为每项配上下一次重置倒计时；点击后再展开完整详情。
 - **点击展开。** 点击岛可打开完整 Usage / Cost / Overview 面板，包含服务列、图表控制和分页。
 - **Usage 与 Cost 横向切换。** Cost 页面会从本地 Claude Code 和 Codex 日志估算今天与本月至今的美元成本、token 吞吐量和趋势。
 - **可配置 token 统计口径。** 可以选择统计所有 token（包含缓存，接近 ccusage 口径），或只统计输入 + 输出（接近 Anthropic claude.ai 统计面板）。

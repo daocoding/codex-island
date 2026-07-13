@@ -89,24 +89,30 @@ struct IslandRootView: View {
                 }
                 .overlay(alignment: .topLeading) {
                     if model.state != .compact {
-                        CoreUsageOverlay(
-                            provider: .claude,
-                            metricsVisible: pillsVisible
-                        )
-                        .padding(.horizontal, 8)
-                        .frame(width: model.pillSlotWidth, alignment: .trailing)
-                        .padding(.top, max(0, (model.notch.height - 28) / 2))
+                        HStack(spacing: 0) {
+                            Color.clear
+                                .frame(width: model.tabWidth)
+                            CoreUsageOverlay(
+                                provider: .claude,
+                                metricsVisible: pillsVisible
+                            )
+                            .frame(width: model.pillSlotWidth, alignment: .leading)
+                        }
+                        .padding(.top, max(0, (model.notch.height - 24) / 2))
                     }
                 }
                 .overlay(alignment: .topTrailing) {
                     if model.state != .compact {
-                        CoreUsageOverlay(
-                            provider: .codex,
-                            metricsVisible: pillsVisible
-                        )
-                        .padding(.horizontal, 8)
-                        .frame(width: model.pillSlotWidth, alignment: .leading)
-                        .padding(.top, max(0, (model.notch.height - 28) / 2))
+                        HStack(spacing: 0) {
+                            CoreUsageOverlay(
+                                provider: .codex,
+                                metricsVisible: pillsVisible
+                            )
+                            .frame(width: model.pillSlotWidth, alignment: .trailing)
+                            Color.clear
+                                .frame(width: model.tabWidth)
+                        }
+                        .padding(.top, max(0, (model.notch.height - 24) / 2))
                     }
                 }
                 .overlay(alignment: .bottomLeading) {
@@ -347,17 +353,11 @@ struct IslandRootView: View {
         }
     }
 
-    /// Logo's distance from the silhouette's leading/trailing edge. In
-    /// `.peek` we offset the logo inward by `pillSlotWidth` so it stays
-    /// physically pinned to its compact position while the silhouette grows
-    /// outward — leaving the new outboard space for the percentage pill.
-    /// Compact and expanded keep the logo at the silhouette edge (existing
-    /// behavior; expanded panel layout depends on it).
+    /// Keep both logos at the silhouette's outer edges in every state. The
+    /// peek rails grow inward from those anchors, placing all four readings
+    /// between the provider marks and the physical notch.
     private var logoEdgePadding: CGFloat {
-        switch model.state {
-        case .compact, .expanded: return 9
-        case .peek:               return model.pillSlotWidth + 9
-        }
+        9
     }
 }
 
@@ -487,8 +487,8 @@ private struct LogoOverlay: View {
 }
 
 /// Always-visible core metrics. Claude contributes 5h/week/Fable and Codex
-/// contributes its weekly bucket, giving the notch four useful readings at
-/// rest while the adjacent logos preserve provider grouping.
+/// contributes its weekly bucket. The provider logos anchor the outer edges;
+/// these readings occupy the two inner rails beside the physical notch.
 private struct CoreUsageOverlay: View {
     let provider: AlertEngine.Provider
     let metricsVisible: Bool
@@ -497,7 +497,7 @@ private struct CoreUsageOverlay: View {
     @ObservedObject private var usageStore = UsageStore.shared
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             let items = metrics
             ForEach(items.indices, id: \.self) { index in
                 CoreUsageMetric(
@@ -567,22 +567,31 @@ private struct CoreUsageMetric: View {
 
     var body: some View {
         let value = window.displayedFraction(mode: usageDisplay.mode) * 100
-        VStack(spacing: -1) {
-            Text(label)
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(tint.opacity(0.78))
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            VStack(spacing: 0) {
+                Text(label)
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(tint.opacity(0.78))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    Text(valueText(value))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(valueColor(value))
+                        .numericTransition(value: value)
+                        .animation(.strongEaseOut, value: value)
+                    Text(resetText(at: context.date))
+                        .font(.system(size: 7, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(valueText(value))
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundStyle(valueColor(value))
-                .numericTransition(value: value)
-                .animation(.strongEaseOut, value: value)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(minWidth: 36, minHeight: 24)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityValue(accessibilityValue(value, at: context.date))
         }
-        .frame(minWidth: 28, minHeight: 28)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label)
-        .accessibilityValue(valueText(value))
     }
 
     private func valueText(_ value: Double) -> String {
@@ -595,6 +604,21 @@ private struct CoreUsageMetric: View {
             return .white.opacity(0.35)
         }
         return UrgencyColor.value(value, mode: usageDisplay.mode)
+    }
+
+    private func resetText(at date: Date) -> String {
+        guard let resetAt = window.resetAt else { return "↻—" }
+        let remaining = resetAt.timeIntervalSince(date)
+        guard remaining > 0 else { return "↻0m" }
+        if remaining < 60 { return "↻<1m" }
+        return "↻\(Duration.compact(remaining))"
+    }
+
+    private func accessibilityValue(_ value: Double, at date: Date) -> String {
+        guard let resetAt = window.resetAt else { return valueText(value) }
+        let remaining = resetAt.timeIntervalSince(date)
+        guard remaining > 0 else { return "\(valueText(value)), reset due" }
+        return "\(valueText(value)), resets in \(Duration.compact(remaining))"
     }
 }
 

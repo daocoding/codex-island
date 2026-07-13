@@ -16,9 +16,10 @@ final class IslandModel: ObservableObject {
     /// Side extension that houses each brand logo in compact state.
     let tabWidth: CGFloat = 38
 
-    /// Per-side outboard rail for the always-visible core usage metrics.
-    /// The Claude rail fits 5h/week/Fable; the Codex rail uses the same width
-    /// so the silhouette remains centered over the physical notch.
+    /// Per-side inner rail for the always-visible core usage metrics. Each
+    /// rail sits between its outer provider logo and the physical notch. The
+    /// Claude rail fits 5h/week/Fable; Codex uses the same width so the
+    /// silhouette remains centered.
     let pillSlotWidth: CGFloat = 128
 
     /// Visible expanded panel width.

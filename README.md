@@ -16,9 +16,9 @@
 
 CodexIsland is a native macOS overlay that turns the MacBook notch into a
 Dynamic-Island-style live activity for Claude Code and Codex usage limits. It
-keeps four core limits visible beside the notch and expands on click to show
-the provider-reported windows with reset timing, chart controls, local-log
-cost estimates, and a year-at-a-glance usage history.
+keeps four core limits and their reset countdowns visible between the provider
+logos and expands on click to show the provider-reported windows, chart
+controls, local-log cost estimates, and a year-at-a-glance usage history.
 
 https://github.com/user-attachments/assets/195beeff-0f70-4d6b-8f3d-9f31d9c0b989
 
@@ -40,7 +40,8 @@ providers' own usage endpoints.
   smallest silhouette; hovering expands it back to the core readings.
 - **Four always-on core readings.** With **Always show usage** enabled by
   default, Claude 5h/week/Fable and the current Codex weekly limit remain
-  visible beside their provider logos; click opens the full detail panel.
+  visible between their provider logos, each paired with its next reset
+  countdown; click opens the full detail panel.
 - **Three swipeable screens.** Click to expand, then swipe between **Usage**,
   **Cost**, and **Overview**. Cost estimates today and month-to-date spend and
   token throughput from local Claude Code, Codex CLI, and OpenCode session
