@@ -18,9 +18,9 @@ final class IslandModel: ObservableObject {
 
     /// Per-side inner rail for the always-visible core usage metrics. Each
     /// rail sits between its outer provider logo and the physical notch. The
-    /// Claude rail fits 5h/week/Fable; Codex uses the same width so the
-    /// silhouette remains centered.
-    let pillSlotWidth: CGFloat = 128
+    /// Claude rail fits three ring + reset cells without compressing their
+    /// labels; Codex uses the same width so the silhouette remains centered.
+    let pillSlotWidth: CGFloat = 196
 
     /// Visible expanded panel width.
     private let expandedWidth: CGFloat = 800

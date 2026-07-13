@@ -40,8 +40,9 @@ providers' own usage endpoints.
   smallest silhouette; hovering expands it back to the core readings.
 - **Four always-on core readings.** With **Always show usage** enabled by
   default, Claude 5h/week/Fable and the current Codex weekly limit remain
-  visible between their provider logos, each paired with its next reset
-  countdown; click opens the full detail panel.
+  visible as compact rings between their provider logos. Each ring keeps its
+  percentage inside and its window label plus next reset countdown beside it;
+  click opens the full detail panel.
 - **Three swipeable screens.** Click to expand, then swipe between **Usage**,
   **Cost**, and **Overview**. Cost estimates today and month-to-date spend and
   token throughput from local Claude Code, Codex CLI, and OpenCode session

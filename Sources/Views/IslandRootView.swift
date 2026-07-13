@@ -98,7 +98,7 @@ struct IslandRootView: View {
                             )
                             .frame(width: model.pillSlotWidth, alignment: .leading)
                         }
-                        .padding(.top, max(0, (model.notch.height - 24) / 2))
+                        .padding(.top, max(0, (model.notch.height - 28) / 2))
                     }
                 }
                 .overlay(alignment: .topTrailing) {
@@ -112,7 +112,7 @@ struct IslandRootView: View {
                             Color.clear
                                 .frame(width: model.tabWidth)
                         }
-                        .padding(.top, max(0, (model.notch.height - 24) / 2))
+                        .padding(.top, max(0, (model.notch.height - 28) / 2))
                     }
                 }
                 .overlay(alignment: .bottomLeading) {
@@ -497,7 +497,7 @@ private struct CoreUsageOverlay: View {
     @ObservedObject private var usageStore = UsageStore.shared
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             let items = metrics
             ForEach(items.indices, id: \.self) { index in
                 CoreUsageMetric(
@@ -568,18 +568,37 @@ private struct CoreUsageMetric: View {
     var body: some View {
         let value = window.displayedFraction(mode: usageDisplay.mode) * 100
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            VStack(spacing: 0) {
-                Text(label)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(tint.opacity(0.78))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text(valueText(value))
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(valueColor(value))
-                        .numericTransition(value: value)
+            HStack(spacing: 4) {
+                ZStack {
+                    Circle()
+                        .stroke(.white.opacity(0.10), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: ringFraction(value))
+                        .stroke(
+                            ringColor,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
                         .animation(.strongEaseOut, value: value)
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        Text(valueNumber(value))
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(valueColor(value))
+                            .numericTransition(value: value)
+                            .animation(.strongEaseOut, value: value)
+                        if hasValue {
+                            Text("%")
+                                .font(.system(size: 5, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.48))
+                        }
+                    }
+                }
+                .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(label)
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(tint.opacity(0.82))
                     Text(resetText(at: context.date))
                         .font(.system(size: 7, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.46))
@@ -587,16 +606,32 @@ private struct CoreUsageMetric: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .frame(minWidth: 36, minHeight: 24)
+            .frame(minWidth: 56, minHeight: 28, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(label)
             .accessibilityValue(accessibilityValue(value, at: context.date))
         }
     }
 
+    private var hasValue: Bool {
+        window.error == nil || window.usedPercent > 0
+    }
+
+    private var ringColor: Color {
+        hasValue ? tint : .white.opacity(0.18)
+    }
+
+    private func ringFraction(_ value: Double) -> Double {
+        guard hasValue else { return 0 }
+        return max(0.001, min(1, value / 100))
+    }
+
+    private func valueNumber(_ value: Double) -> String {
+        hasValue ? "\(Int(value.rounded()))" : "—"
+    }
+
     private func valueText(_ value: Double) -> String {
-        if window.error != nil && window.usedPercent == 0 { return "—" }
-        return "\(Int(value.rounded()))%"
+        hasValue ? "\(valueNumber(value))%" : valueNumber(value)
     }
 
     private func valueColor(_ value: Double) -> Color {
