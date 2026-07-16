@@ -46,10 +46,11 @@ struct ResolveUsageTests {
         let t1 = ProbeCounter()
         let r1 = await ClaudeCredentials.resolveUsage { _, _ in
             t1.calls += 1
-            return .rateLimited
+            return .rateLimited(retryAfter: 3577)
         }
-        if case .failed(let msg) = r1 {
+        if case .failed(let msg, let retryAfter) = r1 {
             expect(msg == ClaudeCredentials.rateLimitedMessage, "T1 resolution is .failed(rateLimitedMessage)")
+            expect(retryAfter == 3577, "T1 carries the provider Retry-After value")
         } else {
             expect(false, "T1 resolution is .failed(rateLimitedMessage)")
         }
@@ -107,7 +108,7 @@ struct ResolveUsageTests {
         // the primed keychain creds probe (unauthorized → clears cache).
         expect(t4.calls == 2, "T4 probes env then cached keychain token (got \(t4.calls))")
         expect(ClaudeCredentials.cachedClaudeCreds == nil, "T4 unauthorized keychain probe clears the creds cache")
-        if case .failed(let msg) = r4 {
+        if case .failed(let msg, _) = r4 {
             expect(msg == ClaudeCredentials.tokenExpiredMessage, "T4 resolution is .failed(tokenExpiredMessage)")
         } else {
             expect(false, "T4 resolution is .failed(tokenExpiredMessage)")
@@ -247,6 +248,23 @@ struct ResolveUsageTests {
                "T8 unsigned build uses stable security CLI identity")
         expect(!ClaudeCredentials.shouldUseSecurityCLI(hasStableSigningIdentity: true),
                "T8 signed build keeps in-process keychain access")
+
+        // T9 — Anthropic's retry header and Claude's local session-limit row
+        // are the two recovery paths that prevent a stale 0% reading.
+        expect(UsageFetcher.parseRetryAfter("3577") == 3577,
+               "T9 Retry-After delta-seconds parses")
+        let epoch = Date(timeIntervalSince1970: 0)
+        expect(UsageFetcher.parseRetryAfter(
+            "Thu, 01 Jan 1970 01:00:00 GMT", now: epoch
+        ) == 3600, "T9 Retry-After HTTP-date parses")
+
+        let eventAt = ISO8601DateFormatter().date(from: "2026-07-16T23:40:57Z")!
+        let reset = ClaudeSessionLimitFallback.parseResetDate(
+            from: "You've hit your session limit · resets 8pm (America/New_York)",
+            eventAt: eventAt
+        )
+        expect(reset == ISO8601DateFormatter().date(from: "2026-07-17T00:00:00Z"),
+               "T9 local session-limit reset parses in its named timezone")
 
         // The store and views match these exact strings; a reword is a
         // breaking change for them, not a copy edit.

@@ -38,10 +38,11 @@ enum UsageFetcher {
         }
     }
 
-    private static func errorPair(_ message: String) -> AppUsage {
+    private static func errorPair(_ message: String, retryAfter: TimeInterval? = nil) -> AppUsage {
         AppUsage(
             fiveHour: WindowUsage(usedPercent: 0, resetAt: nil, error: message),
-            weekly: WindowUsage(usedPercent: 0, resetAt: nil, error: message)
+            weekly: WindowUsage(usedPercent: 0, resetAt: nil, error: message),
+            retryAfter: retryAfter
         )
     }
 
@@ -173,7 +174,8 @@ enum UsageFetcher {
         switch resolution {
         case .usage(let u):              return u
         case .reauthRequired(let msg):   return errorPair(msg)
-        case .failed(let msg):           return errorPair(msg)
+        case .failed(let msg, let retryAfter):
+            return errorPair(msg, retryAfter: retryAfter)
         }
     }
 
@@ -194,7 +196,9 @@ enum UsageFetcher {
             }
             if http.statusCode == 401 { return .unauthorized }
             if http.statusCode == 403 { return .scopeInsufficient }
-            if http.statusCode == 429 { return .rateLimited }
+            if http.statusCode == 429 {
+                return .rateLimited(retryAfter: retryAfter(from: http))
+            }
             guard http.statusCode == 200 else {
                 return .otherError("HTTP \(http.statusCode)")
             }
@@ -203,7 +207,7 @@ enum UsageFetcher {
             if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 if let err = obj["error"] as? [String: Any],
                    let type = err["type"] as? String, type == "rate_limit_error" {
-                    return .rateLimited
+                    return .rateLimited(retryAfter: retryAfter(from: http))
                 }
                 let scoped = parseClaudeScopedWeekly(obj)
                 return .success(AppUsage(
@@ -218,6 +222,25 @@ enum UsageFetcher {
         } catch {
             return .otherError(error.localizedDescription)
         }
+    }
+
+    /// Anthropic currently sends delta-seconds (for example `3577`), while
+    /// RFC 9110 also permits an HTTP date. Support both forms.
+    static func parseRetryAfter(_ raw: String?, now: Date = Date()) -> TimeInterval? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        if let seconds = TimeInterval(raw), seconds >= 0 { return seconds }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss zzz"
+        guard let date = formatter.date(from: raw) else { return nil }
+        return max(0, date.timeIntervalSince(now))
+    }
+
+    private static func retryAfter(from response: HTTPURLResponse) -> TimeInterval? {
+        parseRetryAfter(response.value(forHTTPHeaderField: "Retry-After"))
     }
 
     private static func parseClaudeWindow(_ obj: Any?) -> WindowUsage {

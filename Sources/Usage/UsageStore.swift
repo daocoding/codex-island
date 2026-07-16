@@ -5,7 +5,18 @@ import Network
 @MainActor
 final class UsageStore: ObservableObject {
     static let shared = UsageStore()
-    private init() {}
+
+    private static let claudeCooldownKey = "CodexIsland.claudeCooldownUntil"
+
+    private init() {
+        if let stored = UserDefaults.standard.object(forKey: Self.claudeCooldownKey) as? Date,
+           stored > Date() {
+            claudeCooldownUntil = stored
+        } else {
+            claudeCooldownUntil = nil
+            UserDefaults.standard.removeObject(forKey: Self.claudeCooldownKey)
+        }
+    }
 
     @Published var claude: AppUsage = .empty
     @Published var codex: AppUsage = .empty
@@ -36,10 +47,19 @@ final class UsageStore: ObservableObject {
     /// The /api/oauth/usage limiter is sticky once tripped: it returns 429
     /// with `retry-after: 0` until the account has gone quiet for a while
     /// (anthropics/claude-code#30930), so polling through it never recovers.
-    /// After a rate-limited fetch, skip Claude fetches for this long.
-    /// Deliberately in-memory only — a quit+relaunch retries immediately.
-    private static let rateLimitCooldown: TimeInterval = 900
-    private var claudeCooldownUntil: Date?
+    /// Use one hour when Anthropic omits Retry-After or sends its observed
+    /// sticky-limiter sentinel (`0`). Retrying sooner restarts the quiet
+    /// period and can keep an account throttled indefinitely.
+    private static let fallbackRateLimitCooldown: TimeInterval = 3600
+    private var claudeCooldownUntil: Date? {
+        didSet {
+            if let claudeCooldownUntil {
+                UserDefaults.standard.set(claudeCooldownUntil, forKey: Self.claudeCooldownKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.claudeCooldownKey)
+            }
+        }
+    }
 
     func refresh() {
         if loading { return }
@@ -106,8 +126,13 @@ final class UsageStore: ObservableObject {
             async let codexResetCreditsResult = UsageFetcher.fetchCodexResetCredits()
             let coolingDown = claudeCooldownUntil.map { Date() < $0 } ?? false
             var cl: AppUsage?
+            var localSessionLimit: ClaudeSessionLimitFallback.Event?
             if !coolingDown {
                 cl = await UsageFetcher.fetchClaude()
+            } else {
+                localSessionLimit = await Task.detached(priority: .utility) {
+                    ClaudeSessionLimitFallback.latestActive()
+                }.value
             }
             let c = await codexResult
             let codexResetCredits = await codexResetCreditsResult
@@ -131,16 +156,42 @@ final class UsageStore: ObservableObject {
             if !UsageStore.isErrorOnly(c) || UsageStore.isErrorOnly(self.codex) {
                 self.codex = c
             }
+            var claudeForHistory: AppUsage?
             if let cl {
                 if UsageStore.isRateLimited(cl) {
-                    self.claudeCooldownUntil = Date().addingTimeInterval(UsageStore.rateLimitCooldown)
-                    NSLog("CodexIsland: Claude usage rate-limited; skipping Claude fetches for %.0fs", UsageStore.rateLimitCooldown)
+                    let requested = cl.retryAfter ?? UsageStore.fallbackRateLimitCooldown
+                    let cooldown = max(UsageStore.fallbackRateLimitCooldown, requested + 5)
+                    self.claudeCooldownUntil = Date().addingTimeInterval(cooldown)
+                    localSessionLimit = await Task.detached(priority: .utility) {
+                        ClaudeSessionLimitFallback.latestActive()
+                    }.value
+                    NSLog("CodexIsland: Claude usage rate-limited; skipping Claude fetches for %.0fs", cooldown)
                 } else {
                     self.claudeCooldownUntil = nil
                 }
-                if !UsageStore.isErrorOnly(cl) || UsageStore.isErrorOnly(self.claude) {
+                if let localSessionLimit {
+                    let inferred = UsageStore.applying(localSessionLimit, to: self.claude)
+                    self.claude = inferred
+                    claudeForHistory = inferred
+                } else if !UsageStore.isErrorOnly(cl) || UsageStore.isErrorOnly(self.claude) {
                     self.claude = cl
+                    claudeForHistory = cl
                 }
+            } else if let localSessionLimit {
+                let inferred = UsageStore.applying(localSessionLimit, to: self.claude)
+                self.claude = inferred
+                claudeForHistory = inferred
+            } else if coolingDown,
+                      self.claude.fiveHour.usedPercent >= 0.999,
+                      let resetAt = self.claude.fiveHour.resetAt,
+                      resetAt <= Date() {
+                // The locally observed full session has reset, but the API is
+                // still cooling down. Stop showing 100% as current.
+                self.claude.fiveHour = WindowUsage(
+                    usedPercent: 0,
+                    resetAt: nil,
+                    error: ClaudeCredentials.rateLimitedMessage
+                )
             }
             if let codexResetCredits {
                 self.codexResetCredits = codexResetCredits
@@ -151,7 +202,9 @@ final class UsageStore: ObservableObject {
             // or rate-limited fetch leaves a gap instead of a flat fake line.
             let now = Date()
             UsageHistoryStore.shared.record(provider: .codex, usage: c, at: now)
-            if let cl { UsageHistoryStore.shared.record(provider: .claude, usage: cl, at: now) }
+            if let claudeForHistory {
+                UsageHistoryStore.shared.record(provider: .claude, usage: claudeForHistory, at: now)
+            }
             self.lastUpdated = now
             self.loading = false
         }
@@ -169,6 +222,18 @@ final class UsageStore: ObservableObject {
     private static func isRateLimited(_ u: AppUsage) -> Bool {
         u.fiveHour.error == ClaudeCredentials.rateLimitedMessage
             && u.weekly.error == ClaudeCredentials.rateLimitedMessage
+    }
+
+    /// Replace only Claude's short window. Weekly and model-scoped readings
+    /// remain the last API-confirmed values while the shared endpoint rests.
+    private static func applying(
+        _ event: ClaudeSessionLimitFallback.Event,
+        to usage: AppUsage
+    ) -> AppUsage {
+        var updated = usage
+        updated.fiveHour = WindowUsage(usedPercent: 1, resetAt: event.resetAt, error: nil)
+        updated.shortWindowLabel = "5h"
+        return updated
     }
 
     /// Replace current usage values with hand-tuned percentages so the

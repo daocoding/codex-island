@@ -43,6 +43,9 @@ struct AppUsage {
     /// Display name of the scoped model ("Fable"), server-provided so a
     /// renamed or additional flagship model needs no app update.
     var scopedLabel: String?
+    /// Provider-requested quiet period after a rate-limit response. Keeping
+    /// this structured avoids encoding retry scheduling in a UI error string.
+    var retryAfter: TimeInterval?
 
     init(
         fiveHour: WindowUsage,
@@ -51,7 +54,8 @@ struct AppUsage {
         shortWindowLabel: String? = "5h",
         weeklyWindowLabel: String? = "week",
         scopedWeekly: WindowUsage? = nil,
-        scopedLabel: String? = nil
+        scopedLabel: String? = nil,
+        retryAfter: TimeInterval? = nil
     ) {
         self.fiveHour = fiveHour
         self.weekly = weekly
@@ -60,6 +64,7 @@ struct AppUsage {
         self.weeklyWindowLabel = weeklyWindowLabel
         self.scopedWeekly = scopedWeekly
         self.scopedLabel = scopedLabel
+        self.retryAfter = retryAfter
     }
 
     /// Window used by the compact peek pill and approaching-limit alerts.

@@ -46,7 +46,7 @@ enum ClaudeCredentials {
     /// interprets it to decide whether to advance to the next token source.
     enum ProbeOutcome {
         case success(AppUsage)
-        case rateLimited
+        case rateLimited(retryAfter: TimeInterval?)
         case unauthorized
         /// Token is structurally valid but missing a scope the server now requires
         /// (Anthropic added `user:profile` to /api/oauth/usage in mid-2026).
@@ -65,7 +65,7 @@ enum ClaudeCredentials {
         case reauthRequired(String)
         /// No token source produced usage; carries the last error seen, which
         /// the fetcher renders as the error caption.
-        case failed(String)
+        case failed(String, retryAfter: TimeInterval?)
     }
 
     // MARK: - Resolution
@@ -93,7 +93,8 @@ enum ClaudeCredentials {
             case .success(let u):       return .usage(u)
             // Account-level limit: the keychain token shares the bucket, so a
             // second probe is just another hit on a tripped limiter.
-            case .rateLimited:          return .failed(rateLimitedMessage)
+            case .rateLimited(let retryAfter):
+                return .failed(rateLimitedMessage, retryAfter: retryAfter)
             case .unauthorized:         break
             case .scopeInsufficient:    lastError = reauthRequiredMessage
             case .otherError(let e):    lastError = e
@@ -106,7 +107,8 @@ enum ClaudeCredentials {
             // The token is valid — the account is throttled. Re-probing only
             // doubles pressure on a limiter that is sticky once tripped
             // (429 + retry-after: 0 until the account goes quiet).
-            case .rateLimited:          return .failed(rateLimitedMessage)
+            case .rateLimited(let retryAfter):
+                return .failed(rateLimitedMessage, retryAfter: retryAfter)
             // Expired access token. Claude Code will refresh it on its next
             // run; we stay read-only and show the stale state until then.
             // Drop the cached creds so the next poll re-reads the keychain —
@@ -134,7 +136,7 @@ enum ClaudeCredentials {
             lastError = "multiple keychain logins"
         }
 
-        return .failed(lastError)
+        return .failed(lastError, retryAfter: nil)
     }
 
     // MARK: - Keychain
