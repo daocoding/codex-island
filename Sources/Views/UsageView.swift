@@ -217,9 +217,6 @@ struct ChartTile: View {
 
     private func subCaption() -> String {
         if let r = window.resetAt {
-            if windowKind == .weekly || windowKind == .scopedWeekly {
-                return L10n.tr("resets %@", ResetDateText.detailed(r))
-            }
             let delta = max(0, r.timeIntervalSinceNow)
             return L10n.tr("resets in %@", Duration.compact(delta))
         }
@@ -245,9 +242,6 @@ struct ChartTile: View {
 
     private func compactSubCaption() -> String {
         if let r = window.resetAt {
-            if windowKind == .weekly || windowKind == .scopedWeekly {
-                return "↻ " + ResetDateText.compact(r)
-            }
             let delta = max(0, r.timeIntervalSinceNow)
             return "↻ " + Duration.compact(delta)
         }

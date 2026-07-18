@@ -585,7 +585,11 @@ private struct CompactProviderGauge: View {
     }
 
     private func resetText(for window: WindowUsage, at date: Date) -> String {
-        ResetDateText.compact(window.resetAt, now: date)
+        guard let resetAt = window.resetAt else { return "—" }
+        let remaining = resetAt.timeIntervalSince(date)
+        guard remaining > 0 else { return "0m" }
+        if remaining < 60 { return "<1m" }
+        return Duration.compact(remaining)
     }
 
     private func accessibilityValue(at date: Date) -> String {
