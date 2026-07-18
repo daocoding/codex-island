@@ -187,6 +187,8 @@ final class UsageStore: ObservableObject {
                 } else if !UsageStore.isErrorOnly(cl) || UsageStore.isErrorOnly(self.claude) {
                     self.claude = cl
                     claudeForHistory = cl
+                } else {
+                    self.claude = UsageStore.applyingError(from: cl, to: self.claude)
                 }
             } else if let localSessionLimit {
                 let inferred = UsageStore.applying(localSessionLimit, to: self.claude)
@@ -249,6 +251,25 @@ final class UsageStore: ObservableObject {
         updated.fiveHour = WindowUsage(usedPercent: 1, resetAt: event.resetAt, error: nil)
         updated.shortWindowLabel = "5h"
         return updated
+    }
+
+    /// Preserve the last useful numbers while surfacing the fresh fetch
+    /// failure in expanded UI. A 401/403/429 should not make the notch look
+    /// empty, but it also should not masquerade as live provider data.
+    private static func applyingError(from failed: AppUsage, to usage: AppUsage) -> AppUsage {
+        guard let message = failed.fiveHour.error ?? failed.weekly.error else { return usage }
+        var updated = usage
+        updated.fiveHour = carrying(message, on: usage.fiveHour)
+        updated.weekly = carrying(message, on: usage.weekly)
+        if let scoped = usage.scopedWeekly {
+            updated.scopedWeekly = carrying(message, on: scoped)
+        }
+        updated.retryAfter = failed.retryAfter
+        return updated
+    }
+
+    private static func carrying(_ error: String, on window: WindowUsage) -> WindowUsage {
+        WindowUsage(usedPercent: window.usedPercent, resetAt: window.resetAt, error: error)
     }
 
     /// Replace current usage values with hand-tuned percentages so the
