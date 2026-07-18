@@ -9,8 +9,19 @@ final class UsageStore: ObservableObject {
     private static let claudeCooldownKey = "CodexIsland.claudeCooldownUntil"
 
     private init() {
+        let now = Date()
+        let snapshot = UsageSnapshotStore.load(now: now)
+        if let cachedClaude = snapshot.claude?.usage
+            ?? UsageHistoryStore.shared.latestUsage(provider: .claude, now: now) {
+            claude = cachedClaude
+        }
+        if let cachedCodex = snapshot.codex?.usage
+            ?? UsageHistoryStore.shared.latestUsage(provider: .codex, now: now) {
+            codex = cachedCodex
+        }
+
         if let stored = UserDefaults.standard.object(forKey: Self.claudeCooldownKey) as? Date,
-           stored > Date() {
+           stored > now {
             claudeCooldownUntil = stored
         } else {
             claudeCooldownUntil = nil
@@ -202,8 +213,12 @@ final class UsageStore: ObservableObject {
             // or rate-limited fetch leaves a gap instead of a flat fake line.
             let now = Date()
             UsageHistoryStore.shared.record(provider: .codex, usage: c, at: now)
+            if !UsageStore.isErrorOnly(c) {
+                UsageSnapshotStore.recordCodex(c, at: now)
+            }
             if let claudeForHistory {
                 UsageHistoryStore.shared.record(provider: .claude, usage: claudeForHistory, at: now)
+                UsageSnapshotStore.recordClaude(claudeForHistory, at: now)
             }
             self.lastUpdated = now
             self.loading = false
@@ -301,8 +316,10 @@ final class UsageStore: ObservableObject {
                 if Task.isCancelled { return }
                 if cl.fiveHour.error == nil || cl.weekly.error == nil {
                     await MainActor.run {
+                        let now = Date()
                         self?.claude = cl
-                        self?.lastUpdated = Date()
+                        UsageSnapshotStore.recordClaude(cl, at: now)
+                        self?.lastUpdated = now
                         self?.claudeReauthInProgress = false
                     }
                     return

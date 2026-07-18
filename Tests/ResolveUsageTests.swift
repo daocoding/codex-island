@@ -272,6 +272,65 @@ struct ResolveUsageTests {
         expect(ClaudeCredentials.reauthRequiredMessage == "re-login: claude /login", "reauthRequiredMessage literal is stable")
         expect(ClaudeCredentials.tokenExpiredMessage == "token expired — run claude", "tokenExpiredMessage literal is stable")
 
+        // T10 — startup hydration. The notch should not boot as an all-zero
+        // model just because Claude is cooling down; keep the last complete
+        // provider snapshot, including reset times and scoped model label.
+        let suiteName = "CodexIslandSnapshotTests-\(ProcessInfo.processInfo.processIdentifier)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let snapshotNow = Date(timeIntervalSince1970: 10_000)
+        UsageSnapshotStore.recordClaude(AppUsage(
+            fiveHour: WindowUsage(
+                usedPercent: 0.22,
+                resetAt: Date(timeIntervalSince1970: 11_000),
+                error: nil
+            ),
+            weekly: WindowUsage(
+                usedPercent: 0.49,
+                resetAt: Date(timeIntervalSince1970: 20_000),
+                error: nil
+            ),
+            plan: "max",
+            scopedWeekly: WindowUsage(
+                usedPercent: 0.80,
+                resetAt: Date(timeIntervalSince1970: 20_000),
+                error: nil
+            ),
+            scopedLabel: "Fable"
+        ), at: snapshotNow, defaults: defaults)
+        let hydrated = UsageSnapshotStore.load(
+            now: Date(timeIntervalSince1970: 10_500),
+            defaults: defaults
+        )
+        expect(hydrated.claude?.usage.weekly.percentInt == 49,
+               "T10 snapshot restores Claude weekly percent")
+        expect(hydrated.claude?.usage.scopedLabel == "Fable",
+               "T10 snapshot restores scoped model label")
+        expect(hydrated.claude?.usage.weekly.resetAt == Date(timeIntervalSince1970: 20_000),
+               "T10 snapshot restores reset time")
+
+        UsageSnapshotStore.recordCodex(AppUsage(
+            fiveHour: WindowUsage(
+                usedPercent: 0.99,
+                resetAt: Date(timeIntervalSince1970: 10_900),
+                error: nil
+            ),
+            weekly: WindowUsage(
+                usedPercent: 0.44,
+                resetAt: Date(timeIntervalSince1970: 20_000),
+                error: nil
+            )
+        ), at: snapshotNow, defaults: defaults)
+        let sanitizedSnapshot = UsageSnapshotStore.load(
+            now: Date(timeIntervalSince1970: 11_100),
+            defaults: defaults
+        )
+        expect(sanitizedSnapshot.codex?.usage.fiveHour.error != nil,
+               "T10 expired snapshot short window is not revived")
+        expect(sanitizedSnapshot.codex?.usage.weekly.percentInt == 44,
+               "T10 valid snapshot weekly window survives")
+        defaults.removePersistentDomain(forName: suiteName)
+
         if failures > 0 {
             print("\(failures) failure(s)")
             exit(1)

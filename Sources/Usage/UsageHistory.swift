@@ -69,6 +69,25 @@ final class UsageHistoryStore: ObservableObject {
         series[key(provider, window)] ?? []
     }
 
+    /// Best-effort startup seed for builds installed before full usage
+    /// snapshots existed. The chart history only stores percentages, so reset
+    /// times remain unknown until the next successful provider fetch.
+    func latestUsage(provider: AlertEngine.Provider, now: Date = Date()) -> AppUsage? {
+        let fiveHour = latestWindow(provider, .fiveHour, now: now, maxAge: 6 * 3600)
+        let weekly = latestWindow(provider, .weekly, now: now, maxAge: 36 * 3600)
+        let scoped = latestWindow(provider, .scopedWeekly, now: now, maxAge: 36 * 3600)
+
+        guard fiveHour != nil || weekly != nil || scoped != nil else { return nil }
+        return AppUsage(
+            fiveHour: fiveHour ?? .unknown,
+            weekly: weekly ?? .unknown,
+            shortWindowLabel: fiveHour == nil ? nil : "5h",
+            weeklyWindowLabel: weekly == nil ? nil : "week",
+            scopedWeekly: scoped,
+            scopedLabel: scoped == nil ? nil : "Fable"
+        )
+    }
+
     private func append(
         _ provider: AlertEngine.Provider,
         _ window: UsageWindow,
@@ -84,6 +103,18 @@ final class UsageHistoryStore: ObservableObject {
         if arr.count > Self.maxSamples { arr.removeFirst(arr.count - Self.maxSamples) }
         series[k] = arr
         return true
+    }
+
+    private func latestWindow(
+        _ provider: AlertEngine.Provider,
+        _ window: UsageWindow,
+        now: Date,
+        maxAge: TimeInterval
+    ) -> WindowUsage? {
+        guard let sample = series[key(provider, window)]?.last,
+              now.timeIntervalSince(sample.at) <= maxAge
+        else { return nil }
+        return WindowUsage(usedPercent: sample.used, resetAt: nil, error: nil)
     }
 
     private func key(_ p: AlertEngine.Provider, _ w: UsageWindow) -> String {
