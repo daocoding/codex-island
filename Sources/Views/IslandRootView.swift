@@ -537,7 +537,7 @@ private struct CompactProviderGauge: View {
                     .foregroundStyle(.white.opacity(0.76))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                    .frame(width: provider == .claude ? 14 : 24)
+                    .frame(width: 24)
             }
             .frame(width: 30, height: 30)
             .opacity((metricsVisible && isVisible) ? 1 : 0)
@@ -585,11 +585,7 @@ private struct CompactProviderGauge: View {
     }
 
     private func resetText(for window: WindowUsage, at date: Date) -> String {
-        guard let resetAt = window.resetAt else { return "—" }
-        let remaining = resetAt.timeIntervalSince(date)
-        guard remaining > 0 else { return "0m" }
-        if remaining < 60 { return "<1m" }
-        return Duration.compact(remaining)
+        ResetDateText.compact(window.resetAt, now: date)
     }
 
     private func accessibilityValue(at date: Date) -> String {
