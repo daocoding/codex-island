@@ -19,10 +19,11 @@ enum UsageFetcher {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
 
             // 401 means the access_token in ~/.codex/auth.json has expired.
-            // The Codex CLI rotates this token on its own — there's nothing
-            // we can do from here, so surface the exact remediation step.
+            // Codex Desktop's bundled app-server and the standalone CLI both
+            // use this shared store and rotate it during active use. We stay
+            // read-only and wait for either official surface to refresh it.
             if status == 401 {
-                return errorPair("auth expired — codex login")
+                return errorPair("auth expired — open Codex Desktop")
             }
             if status != 200 {
                 return errorPair("http \(status)")

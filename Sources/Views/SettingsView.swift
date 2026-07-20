@@ -493,7 +493,11 @@ struct SettingsView: View {
             sectionLabel("Providers")
             SettingsRow(
                 title: "Claude",
-                subtitle: providerSubtitle(usage.claude, status: usage.claudeStatus),
+                subtitle: providerSubtitle(
+                    usage.claude,
+                    status: usage.claudeStatus,
+                    provider: .claude
+                ),
                 dot: IslandColor.claude,
                 chip: usage.claude.plan?.uppercased()
             ) {
@@ -505,7 +509,11 @@ struct SettingsView: View {
             }
             SettingsRow(
                 title: "Codex",
-                subtitle: providerSubtitle(usage.codex, status: usage.codexStatus),
+                subtitle: providerSubtitle(
+                    usage.codex,
+                    status: usage.codexStatus,
+                    provider: .codex
+                ),
                 dot: IslandColor.codex,
                 chip: usage.codex.plan?.uppercased()
             ) {
@@ -775,7 +783,11 @@ struct SettingsView: View {
 
     // MARK: - Subtitle composition
 
-    private func providerSubtitle(_ u: AppUsage, status: UsageProviderStatus) -> String {
+    private func providerSubtitle(
+        _ u: AppUsage,
+        status: UsageProviderStatus,
+        provider: AlertEngine.Provider
+    ) -> String {
         let synced: String = {
             guard let updated = status.lastSuccessAt else {
                 return status.failure == nil ? L10n.tr("idle") : L10n.tr("unavailable")
@@ -791,7 +803,9 @@ struct SettingsView: View {
         let nums = windows.map(windowCaption).joined(separator: " / ")
         var parts = [synced]
         if !nums.isEmpty { parts.append(nums) }
-        if let failure = status.failure { parts.append("⚠ \(failureCaption(failure))") }
+        if let failure = status.failure {
+            parts.append("⚠ \(failureCaption(failure, provider: provider))")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -800,9 +814,15 @@ struct SettingsView: View {
         return "\(w.displayedPercentInt(mode: usageDisplay.mode))%"
     }
 
-    private func failureCaption(_ failure: UsageFetchFailure) -> String {
+    private func failureCaption(
+        _ failure: UsageFetchFailure,
+        provider: AlertEngine.Provider
+    ) -> String {
         switch failure.kind {
-        case .authenticationExpired: return L10n.tr("waiting for Claude Code CLI")
+        case .authenticationExpired:
+            return provider == .claude
+                ? L10n.tr("waiting for Claude Code CLI")
+                : L10n.tr("waiting for Codex Desktop")
         case .reauthenticationRequired: return L10n.tr("sign-in needs renewal")
         case .rateLimited: return L10n.tr("rate limited")
         case .transport, .other: return failure.message

@@ -162,7 +162,9 @@ struct ChartsBlock: View {
         let issue: String = {
             switch failure.kind {
             case .authenticationExpired:
-                return L10n.tr("waiting for Claude Code CLI")
+                return provider == .claude
+                    ? L10n.tr("waiting for Claude Code CLI")
+                    : L10n.tr("waiting for Codex Desktop")
             case .reauthenticationRequired:
                 return L10n.tr("Claude sign-in needs renewal")
             case .rateLimited:
