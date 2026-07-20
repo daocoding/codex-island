@@ -400,6 +400,24 @@ struct ResolveUsageTests {
 
         ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
             account: "test-stub",
+            accessToken: "rejected-token-A",
+            subscriptionType: "max",
+            expiresAt: authNow.addingTimeInterval(7200)
+        )
+        let renewedResolution = await ClaudeCredentials.resolveUsage(now: authNow) { _, _ in
+            rejectedCounter.calls += 1
+            return .success(fetched)
+        }
+        expect(rejectedCounter.calls == 2,
+               "T11 same token with renewed expiry resumes probing")
+        if case .usage = renewedResolution {
+            expect(true, "T11 renewed credential generation can recover usage")
+        } else {
+            expect(false, "T11 renewed credential generation can recover usage")
+        }
+
+        ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
+            account: "test-stub",
             accessToken: "rotated-token-B",
             subscriptionType: "max",
             expiresAt: authNow.addingTimeInterval(7200)
@@ -408,7 +426,7 @@ struct ResolveUsageTests {
             rejectedCounter.calls += 1
             return .success(fetched)
         }
-        expect(rejectedCounter.calls == 2, "T11 rotated token resumes probing")
+        expect(rejectedCounter.calls == 3, "T11 rotated token resumes probing")
         if case .usage = rotatedResolution {
             expect(true, "T11 rotated token can recover usage")
         } else {
@@ -421,6 +439,10 @@ struct ResolveUsageTests {
         let parsedExpiry = ClaudeCredentials.parseCredentialExpiry(1_784_404_512_681 as NSNumber)
         expect(parsedExpiry == Date(timeIntervalSince1970: 1_784_404_512.681),
                "T11 millisecond credential expiry parses")
+        expect(!UsageFailureKind.authenticationExpired.requiresInteractiveReauthentication,
+               "T11 access expiry does not claim the user is signed out")
+        expect(UsageFailureKind.reauthenticationRequired.requiresInteractiveReauthentication,
+               "T11 missing OAuth scope still requires interactive reauthentication")
 
         // T12 — schema drift and unknown-display behavior. Missing utilization
         // is unavailable, never fabricated as 0%; remaining mode must not turn

@@ -89,7 +89,7 @@ struct ChartsBlock: View {
 
     private var needsReauth: Bool {
         guard provider == .claude, let kind = status.failure?.kind else { return false }
-        return kind == .authenticationExpired || kind == .reauthenticationRequired
+        return kind.requiresInteractiveReauthentication
     }
 
     var body: some View {
@@ -162,7 +162,7 @@ struct ChartsBlock: View {
         let issue: String = {
             switch failure.kind {
             case .authenticationExpired:
-                return L10n.tr("Claude sign-in expired")
+                return L10n.tr("waiting for Claude Code CLI")
             case .reauthenticationRequired:
                 return L10n.tr("Claude sign-in needs renewal")
             case .rateLimited:

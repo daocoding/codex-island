@@ -106,12 +106,13 @@ enum ClaudeCredentials {
         }
 
         if let creds = cachedCreds {
-            let fingerprint = credentialFingerprint(creds.accessToken)
             if let rejectedCredential,
-               rejectedCredential.fingerprint == fingerprint {
+               rejectedCredential.generation == credentialGeneration(of: creds) {
                 // Re-read on the next poll, but never hit Anthropic again with
                 // a credential the endpoint already rejected. A rotated token
-                // has a different fingerprint and resumes probing immediately.
+                // or a rewritten credential generation (Claude Code can renew
+                // the expiry without changing the token bytes) resumes probing
+                // immediately.
                 clearCache()
                 if rejectedCredential.message == reauthRequiredMessage {
                     return .reauthRequired(reauthRequiredMessage)
@@ -140,7 +141,7 @@ enum ClaudeCredentials {
             // otherwise a token Claude Code already rotated stays stale in
             // the cache forever and the chip never recovers.
             case .unauthorized:
-                rememberRejected(creds.accessToken, message: tokenExpiredMessage)
+                rememberRejected(creds, message: tokenExpiredMessage)
                 clearCache()
                 lastError = tokenExpiredMessage
             // A refresh re-issues the same scope set, so it cannot recover
@@ -148,7 +149,7 @@ enum ClaudeCredentials {
             // actually works. Clear the cache so the re-minted token from
             // `claude /login` is picked up on the next poll.
             case .scopeInsufficient:
-                rememberRejected(creds.accessToken, message: reauthRequiredMessage)
+                rememberRejected(creds, message: reauthRequiredMessage)
                 clearCache()
                 return .reauthRequired(reauthRequiredMessage)
             case .otherError(let e):    lastError = e
@@ -209,8 +210,14 @@ enum ClaudeCredentials {
     /// private) so ResolveUsageTests can prime it and assert the clearing.
     static var cachedClaudeCreds: ClaudeCreds?
 
+    private struct CredentialGeneration: Equatable {
+        let account: String
+        let tokenFingerprint: String
+        let expiresAtMilliseconds: Int64?
+    }
+
     private struct RejectedCredential {
-        let fingerprint: String
+        let generation: CredentialGeneration
         let message: String
     }
 
@@ -453,10 +460,23 @@ enum ClaudeCredentials {
         }
     }
 
-    private static func rememberRejected(_ token: String, message: String) {
+    private static func rememberRejected(_ creds: ClaudeCreds, message: String) {
         rejectedCredential = RejectedCredential(
-            fingerprint: credentialFingerprint(token),
+            generation: credentialGeneration(of: creds),
             message: message
+        )
+    }
+
+    private static func credentialGeneration(of creds: ClaudeCreds) -> CredentialGeneration {
+        CredentialGeneration(
+            account: creds.account,
+            tokenFingerprint: credentialFingerprint(creds.accessToken),
+            // Canonicalize to the millisecond precision Claude Code stores so
+            // JSON round trips cannot create a false new generation through
+            // floating-point Date noise.
+            expiresAtMilliseconds: creds.expiresAt.map {
+                Int64(($0.timeIntervalSince1970 * 1000).rounded())
+            }
         )
     }
 

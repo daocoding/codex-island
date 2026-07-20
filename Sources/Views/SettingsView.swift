@@ -802,7 +802,7 @@ struct SettingsView: View {
 
     private func failureCaption(_ failure: UsageFetchFailure) -> String {
         switch failure.kind {
-        case .authenticationExpired: return L10n.tr("sign-in expired")
+        case .authenticationExpired: return L10n.tr("waiting for Claude Code CLI")
         case .reauthenticationRequired: return L10n.tr("sign-in needs renewal")
         case .rateLimited: return L10n.tr("rate limited")
         case .transport, .other: return failure.message

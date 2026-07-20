@@ -67,11 +67,18 @@ struct WindowUsage: Codable {
 }
 
 enum UsageFailureKind: Equatable {
+    /// The short-lived request credential expired. This does not mean the
+    /// user's Claude login or refresh credential expired; Claude Code usually
+    /// rotates it silently the next time the standalone CLI starts.
     case authenticationExpired
     case reauthenticationRequired
     case rateLimited
     case transport
     case other
+
+    var requiresInteractiveReauthentication: Bool {
+        self == .reauthenticationRequired
+    }
 }
 
 struct UsageFetchFailure: Equatable {
