@@ -13,18 +13,28 @@ final class IslandModel: ObservableObject {
     @Published var size: CGSize = .zero
     @Published var notch: NotchInfo
 
-    /// Side extension that houses each provider's compact usage gauge. The
-    /// optional logo-only mode uses the same slot, so neither state adds
-    /// width beyond the original silhouette.
+    /// Side extension that houses each provider's always-visible compact
+    /// usage gauge. 185pt hardware notch + 2×38pt = the 261pt rest contract.
     let tabWidth: CGFloat = 38
+
+    /// Hover can spend more width because it is transient. The gauge remains
+    /// anchored beside the physical notch while the added space reveals exact
+    /// percentages; moving the pointer away returns to the 261pt instrument.
+    let peekSideWidth: CGFloat = 112
+
+    var sideWidth: CGFloat {
+        state == .peek ? peekSideWidth : tabWidth
+    }
 
     /// Visible expanded panel width.
     private let expandedWidth: CGFloat = 800
 
     /// Visible expanded panel content height. The shape sits flush with the
     /// top of the screen, so we add notch.height of "filler" so visible
-    /// content sits BELOW the notch line.
+    /// content sits BELOW the notch line. Usage gets one extra status row for
+    /// its CD/CCD source and freshness without colliding with the footer.
     private let expandedBaseContentHeight: CGFloat = 188
+    private let usageBaseContentHeight: CGFloat = 208
 
     /// Overview needs room for the full-year contribution grid. Keep this
     /// page-specific so usage/cost preserve their compact original height.
@@ -158,9 +168,14 @@ final class IslandModel: ObservableObject {
 
     private func recomputeSize() {
         switch state {
-        case .compact, .peek:
+        case .compact:
             size = CGSize(
                 width: notch.width + tabWidth * 2,
+                height: notch.height
+            )
+        case .peek:
+            size = CGSize(
+                width: notch.width + peekSideWidth * 2,
                 height: notch.height
             )
         case .expanded:
@@ -172,9 +187,15 @@ final class IslandModel: ObservableObject {
     }
 
     private var expandedContentHeight: CGFloat {
-        let baseHeight = activeScreen == .overview
-            ? overviewBaseContentHeight
-            : expandedBaseContentHeight
+        let baseHeight: CGFloat
+        switch activeScreen {
+        case .usage:
+            baseHeight = usageBaseContentHeight
+        case .cost:
+            baseHeight = expandedBaseContentHeight
+        case .overview:
+            baseHeight = overviewBaseContentHeight
+        }
         let detailHeight = activeScreen == .overview && overviewDayDetailVisible
             ? overviewDetailContentHeight
             : 0

@@ -7,6 +7,8 @@ final class UsageStore: ObservableObject {
     static let shared = UsageStore()
 
     private static let claudeCooldownKey = "CodexIsland.claudeCooldownUntil"
+    private var coordinator = UsageCore.Coordinator()
+    private let stateRepository = try? UsageCore.StateRepository.live()
 
     private init() {
         let now = Date()
@@ -38,6 +40,59 @@ final class UsageStore: ObservableObject {
             claudeCooldownUntil = nil
             UserDefaults.standard.removeObject(forKey: Self.claudeCooldownKey)
         }
+
+        // Prefer normalized, versioned state. Presentation labels still come
+        // from the legacy snapshot during the migration window because the
+        // secure repository deliberately stores quota facts only.
+        if let restored = try? stateRepository?.load(at: now) {
+            coordinator = UsageCore.Coordinator(
+                state: restored,
+                presentations: [
+                    .claude: presentationMetadata(from: claude),
+                    .codex: presentationMetadata(from: codex),
+                ]
+            )
+            if let retryAt = claudeCooldownUntil, retryAt > now {
+                _ = coordinator.acceptFailure(
+                    provider: .claude,
+                    failure: UsageFetchFailure(
+                        kind: .rateLimited,
+                        message: ClaudeCredentials.rateLimitedMessage
+                    ),
+                    attemptedAt: now,
+                    retryAt: retryAt,
+                    projectAt: now
+                )
+            }
+            let projections = coordinator.projectAll(at: now)
+            setProjection(projections.claude, provider: .claude)
+            setProjection(projections.codex, provider: .codex)
+        } else {
+            // One-time v1 migration. From here provider events flow through
+            // UsageCore, while AppUsage remains a compatibility projection
+            // for views, alerts, history, and the fork broadcaster.
+            if claude.hasKnownValue {
+                let projection = coordinator.hydrate(
+                    provider: .claude,
+                    usage: claude,
+                    status: claudeStatus,
+                    observedAt: claudeStatus.lastSuccessAt ?? now,
+                    now: now
+                )
+                setProjection(projection, provider: .claude)
+            }
+            if codex.hasKnownValue {
+                let projection = coordinator.hydrate(
+                    provider: .codex,
+                    usage: codex,
+                    status: codexStatus,
+                    observedAt: codexStatus.lastSuccessAt ?? now,
+                    now: now
+                )
+                setProjection(projection, provider: .codex)
+            }
+        }
+        persistCoreState(at: now)
     }
 
     @Published var claude: AppUsage = .empty
@@ -59,11 +114,17 @@ final class UsageStore: ObservableObject {
 
     private var refreshTask: Task<Void, Never>?
     private var reauthPollTask: Task<Void, Never>?
+    private var claudeBridgeExpiryTask: Task<Void, Never>?
+    private var usageExpiryTask: Task<Void, Never>?
     private var pollTimer: Timer?
     private var intervalCancellable: AnyCancellable?
     private var netMonitor: NWPathMonitor?
     private let netQueue = DispatchQueue(label: "UsageStore.network")
     private var lastNetStatus: NWPath.Status?
+    /// One long-lived adapter keeps usage + reset-credit requests on the same
+    /// immutable CD credential generation and retains the last known reset
+    /// credits separately when only that secondary endpoint fails.
+    private let codexProvider = CodexDesktopProvider()
 
     /// Anthropic's /api/oauth/usage is aggressively rate-limited per token.
     /// `RefreshIntervalStore` enforces a 5-minute floor (300/900/1800).
@@ -104,7 +165,7 @@ final class UsageStore: ObservableObject {
         // CODEXISLAND_DEMO=1 is set in the launching env.
         if AppEnvironment.isDemo {
             let now = Date()
-            self.claude = AppUsage(
+            let demoClaude = AppUsage(
                 fiveHour: WindowUsage(
                     usedPercent: 0.73,
                     resetAt: now.addingTimeInterval(1 * 3600 + 47 * 60),
@@ -116,8 +177,8 @@ final class UsageStore: ObservableObject {
                     error: nil
                 ),
                 plan: "max"
-            ).observed(at: now, source: .api)
-            self.codex = AppUsage(
+            )
+            let demoCodex = AppUsage(
                 fiveHour: WindowUsage(
                     usedPercent: 0.67,
                     resetAt: now.addingTimeInterval(2 * 3600 + 23 * 60),
@@ -129,7 +190,7 @@ final class UsageStore: ObservableObject {
                     error: nil
                 ),
                 plan: "pro"
-            ).observed(at: now, source: .api)
+            )
             self.codexResetCredits = CodexResetCredits(
                 availableCount: 2,
                 credits: [
@@ -149,22 +210,25 @@ final class UsageStore: ObservableObject {
                     )
                 ]
             )
-            self.claudeStatus = UsageProviderStatus(
-                source: .live,
-                lastAttemptAt: now,
-                lastSuccessAt: now,
-                failure: nil,
-                retryAt: nil
+            let claudeProjection = coordinator.acceptSuccess(
+                provider: .claude,
+                usage: demoClaude,
+                source: .claudeSharedCredential,
+                attemptedAt: now,
+                observedAt: now
             )
-            self.codexStatus = UsageProviderStatus(
-                source: .live,
-                lastAttemptAt: now,
-                lastSuccessAt: now,
-                failure: nil,
-                retryAt: nil
+            let codexProjection = coordinator.acceptSuccess(
+                provider: .codex,
+                usage: demoCodex,
+                source: .codexDesktopSharedAuth,
+                attemptedAt: now,
+                observedAt: now
             )
+            setProjection(claudeProjection, provider: .claude)
+            setProjection(codexProjection, provider: .codex)
             self.lastUpdated = now
             self.lastRefreshAt = now
+            armUsageExpiry(now: now)
             return
         }
 
@@ -172,24 +236,44 @@ final class UsageStore: ObservableObject {
         refreshTask?.cancel()
         refreshTask = Task {
             let attemptAt = Date()
-            async let codexResult = UsageFetcher.fetchCodex()
-            async let codexResetCreditsResult = UsageFetcher.fetchCodexResetCredits()
+            async let codexPoll = codexProvider.poll()
+            let claudeDesktopBridgeTask = Task.detached(priority: .utility) {
+                ClaudeDesktopUsageBridge.read(now: attemptAt)
+            }
             var coolingDown = claudeCooldownUntil.map { attemptAt < $0 } ?? false
-            if coolingDown, ClaudeCredentials.credentialIsLocallyExpired(now: attemptAt) {
+
+            // CCD owns its short-lived credential privately. A supported CCD
+            // hook exports only the sanitized quota snapshot; when that is
+            // fresh it is the authoritative path and we do not duplicate the
+            // same usage request with the standalone shared credential.
+            let claudeDesktopCandidate = await claudeDesktopBridgeTask.value
+            let latestProviderObservation = coordinator.state[.claude].readings.values
+                .filter { $0.source != .localSessionLimit }
+                .map(\.observedAt)
+                .max()
+            var claudeDesktopReading = claudeDesktopCandidate
+            if let reading = claudeDesktopReading,
+               let latestProviderObservation,
+               reading.observedAt < latestProviderObservation {
+                claudeDesktopReading = nil
+            }
+            if claudeDesktopReading == nil, coolingDown,
+               ClaudeCredentials.credentialIsLocallyExpired(now: attemptAt) {
                 // This check deliberately happens after `UsageStore.shared`
                 // has completed initialization. `/usr/bin/security` waits by
                 // pumping the main run loop; doing that inside a static
                 // singleton initializer lets SwiftUI recursively request the
-                // same dispatch_once token and crashes at launch.
+                // same dispatch_once token and crashes at launch. A fresh CCD
+                // bridge also bypasses this read entirely, avoiding needless
+                // Keychain authorization prompts.
                 self.claudeCooldownUntil = nil
                 coolingDown = false
             }
             var claudeResult: UsageFetchResult?
-            if !coolingDown {
+            if claudeDesktopReading == nil, !coolingDown {
                 claudeResult = await UsageFetcher.fetchClaude()
             }
-            let fetchedCodex = await codexResult
-            let codexResetCredits = await codexResetCreditsResult
+            let fetchedCodex = await codexPoll
 
             // Cancellation = network monitor saw the path come up while we
             // were mid-flight on a dead one. The fetched values are the
@@ -204,59 +288,81 @@ final class UsageStore: ObservableObject {
             // Reset-cycle validity is part of every reconciliation, including
             // failure/cooldown polls. Old percentages can never survive their
             // reset boundary merely because the app stayed running.
-            self.claude = UsageSnapshotStore.sanitizedUsage(self.claude, now: now)
-            self.codex = UsageSnapshotStore.sanitizedUsage(self.codex, now: now)
+            let resolved = self.coordinator.resolveResets(at: now)
+            self.setProjection(resolved.claude, provider: .claude)
+            self.setProjection(resolved.codex, provider: .codex)
 
             var anyProviderSucceeded = false
 
-            if UsageStore.isErrorOnly(fetchedCodex) {
-                let message = fetchedCodex.fiveHour.error
-                    ?? fetchedCodex.weekly.error
-                    ?? "unavailable"
-                self.codexStatus = UsageProviderStatus(
-                    source: self.codex.hasKnownValue ? .cached : .idle,
-                    lastAttemptAt: attemptAt,
-                    lastSuccessAt: self.codexStatus.lastSuccessAt,
-                    failure: UsageFetchFailure(
-                        kind: message.contains("auth") ? .authenticationExpired : .other,
-                        message: message
-                    ),
-                    retryAt: nil
+            switch fetchedCodex.usage {
+            case .failure(let providerFailure):
+                let failure = UsageStore.failure(from: providerFailure)
+                let projection = self.coordinator.acceptFailure(
+                    provider: .codex,
+                    failure: failure,
+                    attemptedAt: fetchedCodex.attemptedAt,
+                    projectAt: now
                 )
-            } else {
-                let fresh = UsageSnapshotStore.sanitizedUsage(
-                    fetchedCodex.observed(at: now, source: .api),
-                    now: now
+                self.setProjection(projection, provider: .codex)
+
+            case .success(let observation):
+                let projection = self.coordinator.acceptSuccess(
+                    provider: .codex,
+                    usage: observation.value.usage,
+                    source: .codexDesktopSharedAuth,
+                    attemptedAt: fetchedCodex.attemptedAt,
+                    observedAt: observation.observedAt,
+                    completedAt: observation.observedAt,
+                    projectAt: now
                 )
-                self.codex = fresh
-                self.codexStatus = UsageProviderStatus(
-                    source: .live,
-                    lastAttemptAt: attemptAt,
-                    lastSuccessAt: now,
-                    failure: nil,
-                    retryAt: nil
+                self.setProjection(projection, provider: .codex)
+                let fresh = projection.usage
+                UsageHistoryStore.shared.record(
+                    provider: .codex,
+                    usage: fresh,
+                    at: observation.observedAt
                 )
-                UsageHistoryStore.shared.record(provider: .codex, usage: fresh, at: now)
-                UsageSnapshotStore.recordCodex(fresh, at: now)
+                UsageSnapshotStore.recordCodex(fresh, at: observation.observedAt)
                 anyProviderSucceeded = true
             }
 
-            if let claudeResult {
+            if let claudeDesktopReading {
+                let projection = self.coordinator.acceptSuccess(
+                    provider: .claude,
+                    usage: claudeDesktopReading.usage,
+                    source: .claudeDesktopBridge,
+                    attemptedAt: attemptAt,
+                    observedAt: claudeDesktopReading.observedAt,
+                    completedAt: claudeDesktopReading.observedAt,
+                    projectAt: now
+                )
+                self.setProjection(projection, provider: .claude)
+                let fresh = projection.usage
+                UsageHistoryStore.shared.record(
+                    provider: .claude,
+                    usage: fresh,
+                    at: claudeDesktopReading.observedAt
+                )
+                UsageSnapshotStore.recordClaude(fresh, at: claudeDesktopReading.observedAt)
+                self.armClaudeBridgeExpiry(observedAt: claudeDesktopReading.observedAt)
+                anyProviderSucceeded = true
+            } else if let claudeResult {
+                self.claudeBridgeExpiryTask?.cancel()
+                self.claudeBridgeExpiryTask = nil
                 switch claudeResult {
                 case .success(let fetched):
                     self.claudeCooldownUntil = nil
-                    let fresh = UsageSnapshotStore.sanitizedUsage(
-                        fetched.observed(at: now, source: .api),
-                        now: now
+                    let projection = self.coordinator.acceptSuccess(
+                        provider: .claude,
+                        usage: fetched,
+                        source: .claudeSharedCredential,
+                        attemptedAt: attemptAt,
+                        observedAt: now,
+                        completedAt: now,
+                        projectAt: now
                     )
-                    self.claude = fresh
-                    self.claudeStatus = UsageProviderStatus(
-                        source: .live,
-                        lastAttemptAt: attemptAt,
-                        lastSuccessAt: now,
-                        failure: nil,
-                        retryAt: nil
-                    )
+                    self.setProjection(projection, provider: .claude)
+                    let fresh = projection.usage
                     UsageHistoryStore.shared.record(provider: .claude, usage: fresh, at: now)
                     UsageSnapshotStore.recordClaude(fresh, at: now)
                     anyProviderSucceeded = true
@@ -275,75 +381,148 @@ final class UsageStore: ObservableObject {
                     } else {
                         self.claudeCooldownUntil = nil
                     }
+                    let failed = self.coordinator.acceptFailure(
+                        provider: .claude,
+                        failure: failure,
+                        attemptedAt: attemptAt,
+                        retryAt: retryAt,
+                        projectAt: now
+                    )
+                    self.setProjection(failed, provider: .claude)
                     let localSessionLimit = await Task.detached(priority: .utility) {
                         ClaudeSessionLimitFallback.latestActive(now: now)
                     }.value
-                    let usedLocalFallback = self.apply(localSessionLimit)
-                    self.claudeStatus = UsageProviderStatus(
-                        source: usedLocalFallback
-                            ? .mixedLocalFallback
-                            : (self.claude.hasKnownValue ? .cached : .idle),
-                        lastAttemptAt: attemptAt,
-                        lastSuccessAt: self.claudeStatus.lastSuccessAt,
-                        failure: failure,
-                        retryAt: retryAt
-                    )
+                    _ = self.apply(localSessionLimit, now: now)
                 }
             } else {
                 let failure = UsageFetchFailure(
                     kind: .rateLimited,
                     message: ClaudeCredentials.rateLimitedMessage
                 )
+                let failed = self.coordinator.acceptFailure(
+                    provider: .claude,
+                    failure: failure,
+                    attemptedAt: attemptAt,
+                    retryAt: self.claudeCooldownUntil,
+                    projectAt: now
+                )
+                self.setProjection(failed, provider: .claude)
                 let localSessionLimit = await Task.detached(priority: .utility) {
                     ClaudeSessionLimitFallback.latestActive(now: now)
                 }.value
-                let usedLocalFallback = self.apply(localSessionLimit)
-                self.claudeStatus = UsageProviderStatus(
-                    source: usedLocalFallback
-                        ? .mixedLocalFallback
-                        : (self.claude.hasKnownValue ? .cached : .idle),
-                    lastAttemptAt: attemptAt,
-                    lastSuccessAt: self.claudeStatus.lastSuccessAt,
-                    failure: failure,
-                    retryAt: self.claudeCooldownUntil
-                )
+                _ = self.apply(localSessionLimit, now: now)
             }
 
-            if let codexResetCredits {
-                self.codexResetCredits = codexResetCredits
+            switch fetchedCodex.resetCredits {
+            case .fresh(let observation):
+                self.codexResetCredits = observation.value
+            case .stale(let observation, _, _):
+                self.codexResetCredits = observation.value
+            case .unavailable:
+                break
             }
+            self.persistCoreState(at: now)
             if anyProviderSucceeded { self.lastUpdated = now }
             self.lastRefreshAt = now
             self.loading = false
         }
     }
 
-    /// Fetchers use `.unknown` for missing windows; a valid scoped/Fable-only
-    /// response still counts as success.
-    private static func isErrorOnly(_ u: AppUsage) -> Bool {
-        !u.hasKnownValue
+    private static func failure(from failure: CodexProviderFailure) -> UsageFetchFailure {
+        switch failure {
+        case .credentialUnavailable, .credentialMalformed, .authenticationExpired:
+            return UsageFetchFailure(
+                kind: .authenticationExpired,
+                message: "waiting for Codex Desktop"
+            )
+        case .transport, .cancelled:
+            return UsageFetchFailure(
+                kind: .transport,
+                message: "Codex usage network unavailable"
+            )
+        case .http(_, let statusCode) where statusCode == 429:
+            return UsageFetchFailure(
+                kind: .rateLimited,
+                message: "Codex usage rate limited"
+            )
+        case .http(_, let statusCode):
+            return UsageFetchFailure(
+                kind: .other,
+                message: "Codex service returned HTTP \(statusCode)"
+            )
+        case .schema:
+            return UsageFetchFailure(
+                kind: .other,
+                message: "Codex usage response changed"
+            )
+        }
     }
 
     /// Apply only the locally proven 5h limit. Never re-timestamp or persist
     /// cached weekly/Fable data as part of this one-window fallback.
     @discardableResult
-    private func apply(_ event: ClaudeSessionLimitFallback.Event?) -> Bool {
+    private func apply(
+        _ event: ClaudeSessionLimitFallback.Event?,
+        now: Date = Date()
+    ) -> Bool {
         guard let event else { return false }
-        claude.fiveHour = WindowUsage(
+        let localWindow = WindowUsage(
             usedPercent: 1,
             resetAt: event.resetAt,
             error: nil,
             observedAt: event.occurredAt,
             source: .localSessionLimit
         )
-        claude.shortWindowLabel = "5h"
+        let projection = coordinator.acceptClaudeLocalFiveHour(
+            localWindow,
+            fallbackObservedAt: event.occurredAt,
+            projectAt: now
+        )
+        setProjection(projection, provider: .claude)
         UsageHistoryStore.shared.record(
             provider: .claude,
             window: .fiveHour,
-            reading: claude.fiveHour,
+            reading: projection.usage.fiveHour,
             at: event.occurredAt
         )
+        armUsageExpiry(now: now)
         return true
+    }
+
+    private func setProjection(
+        _ projection: UsageCore.AppProjection,
+        provider: UsageCore.ProviderID
+    ) {
+        switch provider {
+        case .claude:
+            claude = projection.usage
+            claudeStatus = projection.status
+        case .codex:
+            codex = projection.usage
+            codexStatus = projection.status
+        }
+    }
+
+    private func presentationMetadata(from usage: AppUsage) -> UsageCore.PresentationMetadata {
+        UsageCore.PresentationMetadata(
+            plan: usage.plan,
+            shortWindowLabel: usage.shortWindowLabel,
+            weeklyWindowLabel: usage.weeklyWindowLabel,
+            scopedLabel: usage.scopedLabel
+        )
+    }
+
+    private func persistCoreState(at date: Date) {
+        armUsageExpiry(now: date)
+        guard let stateRepository else { return }
+        do {
+            try stateRepository.save(coordinator.state, at: date)
+        } catch {
+            // Repository failures are health-neutral: keep live in-memory
+            // readings and the legacy snapshot rather than turning a local
+            // persistence problem into a provider outage.
+            NSLog("CodexIsland: usage state persistence unavailable: %@", String(describing: error))
+        }
     }
 
     /// Replace current usage values with hand-tuned percentages so the
@@ -356,7 +535,7 @@ final class UsageStore: ObservableObject {
         let now = Date()
         let fiveHourReset = now.addingTimeInterval(2 * 3600 + 14 * 60)
         let weeklyReset = now.addingTimeInterval(4 * 86400 + 6 * 3600)
-        self.claude = AppUsage(
+        let previewClaude = AppUsage(
             fiveHour: WindowUsage(
                 usedPercent: claudeFiveHour,
                 resetAt: fiveHourReset,
@@ -368,8 +547,8 @@ final class UsageStore: ObservableObject {
                 error: nil
             ),
             plan: claude.plan ?? "max"
-        ).observed(at: now, source: .api)
-        self.codex = AppUsage(
+        )
+        let previewCodex = AppUsage(
             fiveHour: WindowUsage(
                 usedPercent: codexFiveHour,
                 resetAt: fiveHourReset,
@@ -381,23 +560,26 @@ final class UsageStore: ObservableObject {
                 error: nil
             ),
             plan: codex.plan ?? "pro"
-        ).observed(at: now, source: .api)
-        self.claudeStatus = UsageProviderStatus(
-            source: .live,
-            lastAttemptAt: now,
-            lastSuccessAt: now,
-            failure: nil,
-            retryAt: nil
         )
-        self.codexStatus = UsageProviderStatus(
-            source: .live,
-            lastAttemptAt: now,
-            lastSuccessAt: now,
-            failure: nil,
-            retryAt: nil
+        let claudeProjection = coordinator.acceptSuccess(
+            provider: .claude,
+            usage: previewClaude,
+            source: .claudeSharedCredential,
+            attemptedAt: now,
+            observedAt: now
         )
+        let codexProjection = coordinator.acceptSuccess(
+            provider: .codex,
+            usage: previewCodex,
+            source: .codexDesktopSharedAuth,
+            attemptedAt: now,
+            observedAt: now
+        )
+        setProjection(claudeProjection, provider: .claude)
+        setProjection(codexProjection, provider: .codex)
         self.lastUpdated = now
         self.lastRefreshAt = now
+        armUsageExpiry(now: now)
     }
 
     /// Spawn `claude auth login` and poll for the keychain to update.
@@ -426,25 +608,26 @@ final class UsageStore: ObservableObject {
                 if Task.isCancelled { return }
                 if case .success(let fetched) = result {
                     await MainActor.run {
+                        guard let self else { return }
                         let now = Date()
-                        let fresh = UsageSnapshotStore.sanitizedUsage(
-                            fetched.observed(at: now, source: .api),
-                            now: now
+                        let projection = self.coordinator.acceptSuccess(
+                            provider: .claude,
+                            usage: fetched,
+                            source: .claudeSharedCredential,
+                            attemptedAt: now,
+                            observedAt: now,
+                            completedAt: now,
+                            projectAt: now
                         )
-                        self?.claude = fresh
-                        self?.claudeStatus = UsageProviderStatus(
-                            source: .live,
-                            lastAttemptAt: now,
-                            lastSuccessAt: now,
-                            failure: nil,
-                            retryAt: nil
-                        )
-                        self?.claudeCooldownUntil = nil
+                        self.setProjection(projection, provider: .claude)
+                        let fresh = projection.usage
+                        self.claudeCooldownUntil = nil
                         UsageHistoryStore.shared.record(provider: .claude, usage: fresh, at: now)
                         UsageSnapshotStore.recordClaude(fresh, at: now)
-                        self?.lastUpdated = now
-                        self?.lastRefreshAt = now
-                        self?.claudeReauthInProgress = false
+                        self.persistCoreState(at: now)
+                        self.lastUpdated = now
+                        self.lastRefreshAt = now
+                        self.claudeReauthInProgress = false
                     }
                     return
                 }
@@ -475,7 +658,55 @@ final class UsageStore: ObservableObject {
         intervalCancellable = nil
         netMonitor?.cancel()
         netMonitor = nil
+        claudeBridgeExpiryTask?.cancel()
+        claudeBridgeExpiryTask = nil
+        usageExpiryTask?.cancel()
+        usageExpiryTask = nil
         lastNetStatus = nil
+    }
+
+    /// Expire the earliest reset (or conservative no-reset TTL) at its actual
+    /// boundary instead of waiting for the next 5–30 minute provider poll.
+    /// This keeps the core state, expanded charts, compact rings, alerts, and
+    /// broadcaster on the same cycle transition.
+    private func armUsageExpiry(now: Date = Date()) {
+        usageExpiryTask?.cancel()
+        usageExpiryTask = nil
+
+        let deadlines = UsageCore.ProviderID.allCases.flatMap { providerID in
+            coordinator.state[providerID].readings.compactMap { windowID, reading -> Date? in
+                guard reading.isKnown else { return nil }
+                return reading.resetAt
+                    ?? reading.observedAt.addingTimeInterval(windowID.maximumAgeWithoutReset)
+            }
+        }
+        guard let nextDeadline = deadlines.min() else { return }
+        let delay = max(0.25, nextDeadline.timeIntervalSince(now) + 0.05)
+
+        usageExpiryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            let resolvedAt = Date()
+            let projections = self.coordinator.resolveResets(at: resolvedAt)
+            self.setProjection(projections.claude, provider: .claude)
+            self.setProjection(projections.codex, provider: .codex)
+            self.persistCoreState(at: resolvedAt)
+        }
+    }
+
+    private func armClaudeBridgeExpiry(observedAt: Date) {
+        claudeBridgeExpiryTask?.cancel()
+        let remaining = max(
+            1,
+            ClaudeDesktopUsageBridge.maximumSnapshotAge
+                - Date().timeIntervalSince(observedAt)
+                + 1
+        )
+        claudeBridgeExpiryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.refresh() }
+        }
     }
 
     private func armTimer() {

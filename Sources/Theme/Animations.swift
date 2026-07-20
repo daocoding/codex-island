@@ -14,11 +14,10 @@ extension Animation {
     /// and the slower full ease-in-out pass: responsive start, quiet settle.
     static let pageSwipe = Animation.timingCurve(0.25, 0.82, 0.25, 1, duration: 0.36)
 
-    /// Asymmetric springs on shape morph. Opening is leisurely (the user is
-    /// reaching toward the panel and tracks the morph); closing is snappy
-    /// (the system responds to the user moving away).
-    static let openMorph = Animation.spring(response: 0.42, dampingFraction: 0.82)
-    static let closeMorph = Animation.spring(response: 0.30, dampingFraction: 0.88)
+    /// Shape morphs have no gesture momentum, so use critically damped springs:
+    /// immediate and interruptible, but without decorative overshoot.
+    static let openMorph = Animation.spring(response: 0.34, dampingFraction: 1.0)
+    static let closeMorph = Animation.spring(response: 0.26, dampingFraction: 1.0)
 
     /// Selected-day detail is a small disclosure inside an already-open
     /// panel, so it should be faster and more damped than the full island

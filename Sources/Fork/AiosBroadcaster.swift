@@ -1,4 +1,4 @@
-// AiosBroadcaster — Apex Learn fork addition.
+// AiosBroadcaster — Tony's fork integration boundary.
 //
 // Subscribes to UsageStore and POSTs each refresh to an external aiOS
 // sidecar so its agent-avatar quota rings stay live across the team's
@@ -120,7 +120,13 @@ final class AiosBroadcaster {
     ) async {
         guard let url = URL(string: endpoint) else { return }
         let windowJSON = { (w: WindowUsage) -> [String: Any] in
-            var out: [String: Any] = ["used": w.usedPercent]
+            // The current aiOS v1 validator still requires a numeric `used`.
+            // Keep that compatibility field while publishing `available` so
+            // the v2 consumer can distinguish unknown from confirmed 0%.
+            var out: [String: Any] = [
+                "used": w.usedPercent,
+                "available": w.hasKnownValue,
+            ]
             if let r = w.resetAt {
                 out["resetAt"] = Int(r.timeIntervalSince1970 * 1000)
             } else {
@@ -143,13 +149,24 @@ final class AiosBroadcaster {
             "weekly": windowJSON(app.weekly),
             "fiveHour": windowJSON(app.fiveHour),
             "host": host,
+            "schemaVersion": 2,
+            "windowShape": app.shortWindowLabel == nil ? "weekly_only" : "dual",
             // Keep a failed poll from making cached values look newly observed
             // downstream. Individual windows also carry their own timestamp.
             "ts": Int(providerTimestamp.timeIntervalSince1970 * 1000),
             "fresh": status.isLive,
         ]
+        if let scopedWeekly = app.scopedWeekly {
+            body["scopedWeekly"] = windowJSON(scopedWeekly)
+            body["scopedLabel"] = app.scopedLabel ?? "model"
+        }
+        let readings = [app.fiveHour, app.weekly] + (app.scopedWeekly.map { [$0] } ?? [])
+        if let source = readings.compactMap(\.source).first {
+            body["source"] = source.rawValue
+        }
         // Propagate error so the sidecar / frontend can dim the rings as stale.
-        let err = status.failure?.message ?? app.weekly.error ?? app.fiveHour.error
+        let err = status.failure?.message
+            ?? (app.hasKnownValue ? nil : (app.weekly.error ?? app.fiveHour.error))
         if let err { body["error"] = err }
 
         var req = URLRequest(url: url)

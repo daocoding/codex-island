@@ -3,17 +3,10 @@ import AppKit
 
 struct IslandRootView: View {
     @ObservedObject var model: IslandModel
-    @ObservedObject private var alwaysShow = AlwaysShowUsageStore.shared
     @State private var hovering = false
     @State private var contentVisible = false
     @State private var pillsVisible = false
     @State private var pulseToken: UUID?
-
-    /// Image decode from disk is ~150µs per call. Computed properties
-    /// re-decoded both logos every render — inside a 120Hz TimelineView
-    /// that's 240 main-thread decodes/sec. Cache once on appear.
-    @State private var claudeLogo: NSImage?
-    @State private var openaiLogo: NSImage?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,50 +63,30 @@ struct IslandRootView: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .topLeading) {
-                    if compactLogoVisible {
-                        LogoOverlay(
-                            image: claudeLogo,
-                            color: IslandColor.claude,
+                    if model.state != .expanded {
+                        CompactProviderRail(
                             provider: .claude,
-                            edgePadding: logoEdgePadding,
-                            topPadding: max(0, (model.notch.height - 20) / 2)
+                            sideWidth: model.sideWidth,
+                            showsSummary: pillsVisible
+                        )
+                        .frame(
+                            width: model.sideWidth,
+                            height: model.notch.height,
+                            alignment: .trailing
                         )
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    if compactLogoVisible {
-                        LogoOverlay(
-                            image: openaiLogo,
-                            color: IslandColor.codex,
+                    if model.state != .expanded {
+                        CompactProviderRail(
                             provider: .codex,
-                            edgePadding: logoEdgePadding,
-                            topPadding: max(0, (model.notch.height - 20) / 2)
-                        )
-                    }
-                }
-                .overlay(alignment: .topLeading) {
-                    if model.state != .compact {
-                        CompactProviderGauge(
-                            provider: .claude,
-                            metricsVisible: pillsVisible
+                            sideWidth: model.sideWidth,
+                            showsSummary: pillsVisible
                         )
                         .frame(
-                            width: model.tabWidth,
+                            width: model.sideWidth,
                             height: model.notch.height,
-                            alignment: .center
-                        )
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if model.state != .compact {
-                        CompactProviderGauge(
-                            provider: .codex,
-                            metricsVisible: pillsVisible
-                        )
-                        .frame(
-                            width: model.tabWidth,
-                            height: model.notch.height,
-                            alignment: .center
+                            alignment: .leading
                         )
                     }
                 }
@@ -164,16 +137,9 @@ struct IslandRootView: View {
                 .onHover { h in
                     hovering = h
                     if h {
-                        // Trackpad tap on hover-in. .levelChange is closer to
-                        // a volume-key tick than the .generic notification
-                        // pattern. No-op if haptics are off.
-                        NSHapticFeedbackManager.defaultPerformer.perform(
-                            .levelChange, performanceTime: .now
-                        )
-                        // PEEK ENTER: shape morphs out to peek width. Pills
-                        // fade in 60ms later so the eye sees the shape commit
-                        // first, then content arrives. Hover does NOT open
-                        // the full panel — that requires a click.
+                        // Hover is a precision reveal, not an alert. The
+                        // silhouette extends symmetrically and exact values
+                        // arrive just after the geometry starts moving.
                         if model.state == .compact {
                             withAnimation(.openMorph) {
                                 model.setState(.peek)
@@ -186,13 +152,11 @@ struct IslandRootView: View {
                             }
                         }
                     } else {
-                        // EXIT: pills fade first (unless we're pinning peek),
-                        // then the shape settles at the rest state — `.compact`
-                        // normally, `.peek` under always-show.
-                        if !alwaysShow.enabled {
-                            withAnimation(.easeOut(duration: 0.08)) {
-                                pillsVisible = false
-                            }
+                        // Exact values retire before the extra hover width;
+                        // both gauges remain visible in the 261pt rest
+                        // instrument throughout the transition.
+                        withAnimation(.easeOut(duration: 0.08)) {
+                            pillsVisible = false
                         }
                         withAnimation(.easeOut(duration: 0.10)) {
                             contentVisible = false
@@ -205,22 +169,9 @@ struct IslandRootView: View {
                         // entire fade before the closeMorph fired.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                             guard !hovering else { return }
-                            // Re-read restState here — the user may have flipped
-                            // the always-show toggle during the 20ms wait, and
-                            // a captured-at-creation-time `target` would settle
-                            // at the wrong state for them.
-                            let target = restState
-                            if model.state != target {
+                            if model.state != .compact {
                                 withAnimation(.closeMorph) {
-                                    model.setState(target)
-                                }
-                            }
-                            // Coming out of `.expanded` under always-show, the
-                            // pills were hidden by the open-panel branch — bring
-                            // them back as the shape resettles at peek.
-                            if alwaysShow.enabled && !pillsVisible {
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    pillsVisible = true
+                                    model.setState(.compact)
                                 }
                             }
                         }
@@ -233,57 +184,10 @@ struct IslandRootView: View {
         .accessibilityLabel(L10n.tr("CodexIsland panel"))
         .accessibilityHint(accessibilityHintForState)
         .onAppear {
-            if claudeLogo == nil {
-                claudeLogo = Bundle.main.url(forResource: "claude_logo", withExtension: "pdf")
-                    .flatMap { NSImage(contentsOf: $0) }
-            }
-            if openaiLogo == nil {
-                openaiLogo = Bundle.main.url(forResource: "openai_logo", withExtension: "pdf")
-                    .flatMap { NSImage(contentsOf: $0) }
-            }
-            // Snap to peek on launch when the user has opted into always-show.
-            // No animation here — the window is just becoming visible, so the
-            // user sees the silhouette appear already at peek width rather
-            // than morphing out under their gaze.
-            if alwaysShow.enabled && model.state == .compact {
-                model.setState(.peek)
-                pillsVisible = true
-            }
-        }
-        .onChange(of: alwaysShow.enabled) { enabled in
-            // Live toggle — defer to the user's current interaction. If they
-            // happen to be hovering, the hover state machine owns the morph
-            // and will land on the new rest state on hover-out. If the panel
-            // is expanded, leave it alone for the same reason.
-            guard !hovering, model.state != .expanded else { return }
-            if enabled {
-                if model.state == .compact {
-                    withAnimation(.openMorph) {
-                        model.setState(.peek)
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-                        guard model.state == .peek, !hovering else { return }
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            pillsVisible = true
-                        }
-                    }
-                }
-            } else {
-                if model.state == .peek {
-                    withAnimation(.easeOut(duration: 0.08)) {
-                        pillsVisible = false
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
-                        // Re-check `alwaysShow.enabled` — if the user toggled
-                        // back on inside the 100ms wait, leave the peek state
-                        // alone instead of fighting their newer intent.
-                        guard !hovering, model.state == .peek, !alwaysShow.enabled else { return }
-                        withAnimation(.closeMorph) {
-                            model.setState(.compact)
-                        }
-                    }
-                }
-            }
+            // The gauges are the resting product now. Launch compact and let
+            // hover temporarily reveal exact values without a preference.
+            if model.state != .compact { model.setState(.compact) }
+            pillsVisible = false
         }
         .onReceive(AlertEngine.shared.$pulseEvent) { event in
             guard let event, event.id != pulseToken else { return }
@@ -319,17 +223,14 @@ struct IslandRootView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
             // If the user is hovering or has expanded the panel meanwhile,
             // don't fight their state — let their interaction own the peek
-            // lifecycle from here. Under always-show, `.peek` IS the rest
-            // state, so the pulse just resolves into the steady-state pill
-            // rather than collapsing back to compact.
-            guard !hovering, model.state == .peek, !alwaysShow.enabled else { return }
+            // lifecycle from here. Otherwise return to the fixed compact
+            // instrument after the temporary exact-value reveal.
+            guard !hovering, model.state == .peek else { return }
             withAnimation(.easeOut(duration: 0.08)) {
                 pillsVisible = false
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
-                // Mirror the outer 4-second guard — if always-show flipped on
-                // during the tiny inner wait, leave the peek state alone.
-                guard !hovering, model.state == .peek, !alwaysShow.enabled else { return }
+                guard !hovering, model.state == .peek else { return }
                 withAnimation(.closeMorph) {
                     model.setState(.compact)
                 }
@@ -337,23 +238,10 @@ struct IslandRootView: View {
         }
     }
 
-    private var restState: IslandModel.State {
-        alwaysShow.enabled ? .peek : .compact
-    }
-
-    /// In optional logo-only mode the logos occupy the same 38pt slots as
-    /// the gauges. During the compact↔peek cross-fade, keep them visible until
-    /// the gauge content arrives so there is never a blank frame.
-    private var compactLogoVisible: Bool {
-        model.state == .compact || (model.state == .peek && !pillsVisible)
-    }
-
     private var accessibilityHintForState: String {
         switch model.state {
         case .compact:
-            return alwaysShow.enabled
-                ? L10n.tr("Click to expand. Command-click to cycle visualization.")
-                : L10n.tr("Hover to peek usage. Click to expand. Command-click to cycle visualization.")
+            return L10n.tr("Hover for exact usage. Click to expand. Command-click to cycle visualization.")
         case .peek:     return L10n.tr("Click to expand. Command-click to cycle visualization.")
         case .expanded:
             return ScreenPref.shared.screen == .overview
@@ -362,11 +250,6 @@ struct IslandRootView: View {
         }
     }
 
-    /// Edge inset for the optional logo-only state. Gauges replace these
-    /// images in-place, preserving the exact same compact footprint.
-    private var logoEdgePadding: CGFloat {
-        9
-    }
 }
 
 /// Silhouette + halo + animated sweep. Bundles every layer whose
@@ -447,50 +330,83 @@ private struct GlowLayer: View {
     }
 }
 
-/// Per-provider brand logo overlay. Observes only ProviderVisibilityStore
-/// so a UsageStore/CostStore tick doesn't re-render the logo image or
-/// re-evaluate its accessibility label.
-private struct LogoOverlay: View {
-    let image: NSImage?
-    let color: Color
+/// One provider's compact rail. At rest only the 30pt gauge occupies the
+/// 38pt side extension. Hover grows that same rail outward and reveals exact
+/// percentages while the gauge stays anchored beside the physical notch.
+private struct CompactProviderRail: View {
     let provider: AlertEngine.Provider
-    let edgePadding: CGFloat
-    let topPadding: CGFloat
-
-    @ObservedObject private var visibility = ProviderVisibilityStore.shared
+    let sideWidth: CGFloat
+    let showsSummary: Bool
 
     var body: some View {
-        // Hidden providers fully drop out — header / peek pill / chrome
-        // are gated identically. `.opacity(isVisible ? 1 : 0)` keeps the
-        // view in the layout (so other overlays don't reflow) but makes
-        // it invisible, and the explicit `.animation(.openMorph, value:)`
-        // pairs the chrome fade with the panel layout swap when the user
-        // toggles a provider in Settings.
-        if let image {
-            Image(nsImage: image)
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .foregroundStyle(color)
-                .frame(width: 20, height: 20)
-                .padding(provider == .claude ? .leading : .trailing, edgePadding)
-                .padding(.top, topPadding)
-                .opacity(isVisible ? 1 : 0)
-                .animation(.openMorph, value: isVisible)
-                .accessibilityLabel(isVisible ? providerLabel : L10n.tr("%@ (hidden)", providerLabel))
-                .accessibilityHidden(!isVisible)
+        HStack(spacing: 4) {
+            if provider == .claude {
+                if showsSummary {
+                    CompactUsageSummary(provider: provider)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.opacity.combined(with: .offset(x: 3)))
+                }
+                CompactProviderGauge(provider: provider)
+            } else {
+                CompactProviderGauge(provider: provider)
+                if showsSummary {
+                    CompactUsageSummary(provider: provider)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.opacity.combined(with: .offset(x: -3)))
+                }
+            }
         }
+        .frame(
+            width: max(30, sideWidth - 4),
+            alignment: provider == .claude ? .trailing : .leading
+        )
+        .frame(
+            width: sideWidth,
+            alignment: provider == .claude ? .leading : .trailing
+        )
+        .clipped()
+    }
+}
+
+/// Exact values are deliberately secondary to the glanceable rings. They
+/// appear only in the transient hover width and use fixed-width numerals so
+/// refreshes do not make the rail visibly jump.
+private struct CompactUsageSummary: View {
+    let provider: AlertEngine.Provider
+
+    @ObservedObject private var usageStore = UsageStore.shared
+    @ObservedObject private var usageDisplay = UsageDisplayModeStore.shared
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let rawUsage = provider == .claude ? usageStore.claude : usageStore.codex
+            let usage = UsageSnapshotStore.sanitizedUsage(rawUsage, now: context.date)
+            VStack(
+                alignment: provider == .claude ? .trailing : .leading,
+                spacing: 1
+            ) {
+                if provider == .claude {
+                    Text("5h \(percent(usage.fiveHour))")
+                    Text("W \(percent(usage.weekly)) · F \(percent(usage.scopedWeekly))")
+                } else {
+                    Text("WEEK \(percent(codexWeeklyWindow(in: usage)))")
+                }
+            }
+        }
+        .font(.system(size: 7, weight: .medium, design: .monospaced))
+        .foregroundStyle(.white.opacity(0.72))
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityHidden(true)
     }
 
-    private var isVisible: Bool {
-        visibility.effectiveVisible(provider: provider)
+    private func percent(_ window: WindowUsage?) -> String {
+        guard let window, window.hasKnownValue else { return "—" }
+        return "\(window.displayedPercentInt(mode: usageDisplay.mode))%"
     }
 
-    private var providerLabel: String {
-        switch provider {
-        case .claude: return "Claude"
-        case .codex:  return "OpenAI"
-        }
+    private func codexWeeklyWindow(in usage: AppUsage) -> WindowUsage {
+        usage.weeklyWindowLabel == nil ? usage.headlineWindow : usage.weekly
     }
 }
 
@@ -499,7 +415,6 @@ private struct LogoOverlay: View {
 /// single weekly ring. Both centers mean the same thing: weekly reset time.
 private struct CompactProviderGauge: View {
     let provider: AlertEngine.Provider
-    let metricsVisible: Bool
 
     @ObservedObject private var visibility = ProviderVisibilityStore.shared
     @ObservedObject private var usageStore = UsageStore.shared
@@ -548,14 +463,13 @@ private struct CompactProviderGauge: View {
                 }
             }
             .frame(width: 30, height: 30)
-            .opacity((metricsVisible && isVisible) ? (providerStatus.isStale ? 0.62 : 1) : 0)
-            .scaleEffect(metricsVisible ? 1 : 0.82)
+            .opacity(isVisible ? (providerStatus.isStale ? 0.62 : 1) : 0)
             .animation(.openMorph, value: isVisible)
             .allowsHitTesting(false)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(providerLabel)
             .accessibilityValue(accessibilityValue(for: currentUsage, at: context.date))
-            .accessibilityHidden(!(metricsVisible && isVisible))
+            .accessibilityHidden(!isVisible)
         }
     }
 
@@ -609,16 +523,19 @@ private struct CompactProviderGauge: View {
         let freshness = providerStatus.isStale ? "cached or unavailable, " : ""
         switch provider {
         case .claude:
-            let scoped = usage.scopedWeekly?.displayedPercentInt(mode: usageDisplay.mode)
-            let scopedText = scoped.map { "\(usage.scopedLabel ?? "Fable") \($0) percent" }
-                ?? "Fable unavailable"
-            return freshness + "5 hour \(usage.fiveHour.displayedPercentInt(mode: usageDisplay.mode)) percent, "
-                + "week \(usage.weekly.displayedPercentInt(mode: usageDisplay.mode)) percent, "
-                + "\(scopedText), weekly reset \(reset)"
+            return freshness + "5 hour \(accessiblePercent(usage.fiveHour)), "
+                + "week \(accessiblePercent(usage.weekly)), "
+                + "\(usage.scopedLabel ?? "Fable") \(accessiblePercent(usage.scopedWeekly)), "
+                + "weekly reset \(reset)"
         case .codex:
-            return freshness + "week \(codexWeeklyWindow(in: usage).displayedPercentInt(mode: usageDisplay.mode)) percent, "
+            return freshness + "week \(accessiblePercent(codexWeeklyWindow(in: usage))), "
                 + "weekly reset \(reset)"
         }
+    }
+
+    private func accessiblePercent(_ window: WindowUsage?) -> String {
+        guard let window, window.hasKnownValue else { return "unavailable" }
+        return "\(window.displayedPercentInt(mode: usageDisplay.mode)) percent"
     }
 }
 

@@ -1,7 +1,14 @@
 import Foundation
 
 enum UsageReadingSource: String, Codable {
+    /// Legacy direct-provider value retained for snapshot compatibility.
     case api
+    /// Sanitized quota data emitted from a hook running inside CCD.
+    case claudeDesktopBridge
+    /// Read-only fallback using Claude Code's shared Keychain credential.
+    case claudeSharedCredential
+    /// Read-only auth.json shared with Codex Desktop's bundled app server.
+    case codexDesktopSharedAuth
     case localSessionLimit
     case migratedCache
 }

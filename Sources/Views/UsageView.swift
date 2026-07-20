@@ -21,43 +21,48 @@ struct UsageView: View {
         let claudeOn = visibility.claudeVisible
         let codexOn = visibility.codexVisible
 
-        HStack(spacing: 0) {
-            switch (claudeOn, codexOn) {
-            case (true, true):
-                ChartsBlock(color: IslandColor.claude, usage: store.claude,
-                            status: store.claudeStatus,
-                            style: style, seed: 1, provider: .claude)
-                hairline
-                ChartsBlock(color: IslandColor.codex, usage: store.codex,
-                            status: store.codexStatus,
-                            style: style, seed: 3, provider: .codex)
-            case (true, false):
-                ChartsBlock(color: IslandColor.claude, usage: store.claude,
-                            status: store.claudeStatus,
-                            style: style, seed: 1, provider: .claude)
-                hairline
-                PerModelBreakdown(provider: .claude, metric: .tokens)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(.horizontal, 12)
-                    .transition(breakdownTransition)
-            case (false, true):
-                PerModelBreakdown(provider: .codex, metric: .tokens)
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .padding(.horizontal, 12)
-                    .transition(breakdownTransition)
-                hairline
-                ChartsBlock(color: IslandColor.codex, usage: store.codex,
-                            status: store.codexStatus,
-                            style: style, seed: 3, provider: .codex)
-            case (false, false):
-                BothHiddenPlaceholder()
-                    .transition(.opacity)
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let claude = UsageSnapshotStore.sanitizedUsage(store.claude, now: context.date)
+            let codex = UsageSnapshotStore.sanitizedUsage(store.codex, now: context.date)
+
+            HStack(spacing: 0) {
+                switch (claudeOn, codexOn) {
+                case (true, true):
+                    ChartsBlock(color: IslandColor.claude, usage: claude,
+                                status: store.claudeStatus,
+                                style: style, seed: 1, provider: .claude)
+                    hairline
+                    ChartsBlock(color: IslandColor.codex, usage: codex,
+                                status: store.codexStatus,
+                                style: style, seed: 3, provider: .codex)
+                case (true, false):
+                    ChartsBlock(color: IslandColor.claude, usage: claude,
+                                status: store.claudeStatus,
+                                style: style, seed: 1, provider: .claude)
+                    hairline
+                    PerModelBreakdown(provider: .claude, metric: .tokens)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .padding(.horizontal, 12)
+                        .transition(breakdownTransition)
+                case (false, true):
+                    PerModelBreakdown(provider: .codex, metric: .tokens)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                        .padding(.horizontal, 12)
+                        .transition(breakdownTransition)
+                    hairline
+                    ChartsBlock(color: IslandColor.codex, usage: codex,
+                                status: store.codexStatus,
+                                style: style, seed: 3, provider: .codex)
+                case (false, false):
+                    BothHiddenPlaceholder()
+                        .transition(.opacity)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 22)
+            .padding(.top, 12)
+            .padding(.bottom, 6)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
     }
 
     /// Slight scale + opacity gives the breakdown half a sense of "expanding
@@ -150,12 +155,21 @@ struct ChartsBlock: View {
         let cachedPrefix: String? = {
             guard status.lastSuccessAt != nil || usage.hasKnownValue else { return nil }
             if status.source == .mixedLocalFallback { return L10n.tr("5h local") }
-            guard let lastSuccessAt = status.lastSuccessAt else { return L10n.tr("cached") }
+            guard let lastSuccessAt = status.lastSuccessAt else {
+                return [readingOrigin, L10n.tr("cached")]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
+            }
             let age = Duration.compact(max(0, Date().timeIntervalSince(lastSuccessAt)))
-            return L10n.tr("cached %@ ago", age)
+            return [readingOrigin, L10n.tr("cached %@ ago", age)]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         }()
 
         guard let failure = status.failure else {
+            if status.source == .live {
+                return readingOrigin.map { L10n.tr("Live via %@", $0) }
+            }
             return status.source == .cached ? cachedPrefix : nil
         }
 
@@ -163,7 +177,7 @@ struct ChartsBlock: View {
             switch failure.kind {
             case .authenticationExpired:
                 return provider == .claude
-                    ? L10n.tr("waiting for Claude Code CLI")
+                    ? L10n.tr("waiting for CCD activity or Claude Code")
                     : L10n.tr("waiting for Codex Desktop")
             case .reauthenticationRequired:
                 return L10n.tr("Claude sign-in needs renewal")
@@ -180,6 +194,16 @@ struct ChartsBlock: View {
             }
         }()
         return [cachedPrefix, issue].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var readingOrigin: String? {
+        let sources = [usage.fiveHour.source, usage.weekly.source, usage.scopedWeekly?.source]
+            .compactMap { $0 }
+        if sources.contains(.claudeDesktopBridge) { return "CCD" }
+        if sources.contains(.codexDesktopSharedAuth) { return "CD" }
+        if sources.contains(.claudeSharedCredential) { return L10n.tr("Claude shared auth") }
+        if sources.contains(.localSessionLimit) { return L10n.tr("local session") }
+        return nil
     }
 }
 
