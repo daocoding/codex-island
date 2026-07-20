@@ -507,46 +507,54 @@ private struct CompactProviderGauge: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
+            let currentUsage = UsageSnapshotStore.sanitizedUsage(usage, now: context.date)
             ZStack {
                 if provider == .claude {
                     CompactUsageRing(
-                        window: usage.scopedWeekly ?? .unknown,
+                        window: currentUsage.scopedWeekly ?? .unknown,
                         diameter: 30,
                         color: tint
                     )
                     CompactUsageRing(
-                        window: usage.weekly,
+                        window: currentUsage.weekly,
                         diameter: 24,
                         color: tint.opacity(0.82)
                     )
                     CompactUsageRing(
-                        window: usage.fiveHour,
+                        window: currentUsage.fiveHour,
                         diameter: 18,
                         color: tint.opacity(0.64)
                     )
                 } else {
                     CompactUsageRing(
-                        window: codexWeeklyWindow,
+                        window: codexWeeklyWindow(in: currentUsage),
                         diameter: 30,
                         color: tint
                     )
                 }
 
-                Text(resetText(for: weeklyResetWindow, at: context.date))
+                Text(resetText(for: weeklyResetWindow(in: currentUsage), at: context.date))
                     .font(.system(size: 7, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.76))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                     .frame(width: 24)
+
+                if providerStatus.failure != nil {
+                    Circle()
+                        .fill(IslandColor.alertAmber)
+                        .frame(width: 3.5, height: 3.5)
+                        .offset(x: 11.5, y: -11.5)
+                }
             }
             .frame(width: 30, height: 30)
-            .opacity((metricsVisible && isVisible) ? 1 : 0)
+            .opacity((metricsVisible && isVisible) ? (providerStatus.isStale ? 0.62 : 1) : 0)
             .scaleEffect(metricsVisible ? 1 : 0.82)
             .animation(.openMorph, value: isVisible)
             .allowsHitTesting(false)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(providerLabel)
-            .accessibilityValue(accessibilityValue(at: context.date))
+            .accessibilityValue(accessibilityValue(for: currentUsage, at: context.date))
             .accessibilityHidden(!(metricsVisible && isVisible))
         }
     }
@@ -562,12 +570,16 @@ private struct CompactProviderGauge: View {
         }
     }
 
-    private var codexWeeklyWindow: WindowUsage {
+    private var providerStatus: UsageProviderStatus {
+        usageStore.status(for: provider)
+    }
+
+    private func codexWeeklyWindow(in usage: AppUsage) -> WindowUsage {
         usage.weeklyWindowLabel == nil ? usage.headlineWindow : usage.weekly
     }
 
-    private var weeklyResetWindow: WindowUsage {
-        provider == .claude ? usage.weekly : codexWeeklyWindow
+    private func weeklyResetWindow(in usage: AppUsage) -> WindowUsage {
+        provider == .claude ? usage.weekly : codexWeeklyWindow(in: usage)
     }
 
     private var tint: Color {
@@ -592,18 +604,19 @@ private struct CompactProviderGauge: View {
         return Duration.compact(remaining)
     }
 
-    private func accessibilityValue(at date: Date) -> String {
-        let reset = resetText(for: weeklyResetWindow, at: date)
+    private func accessibilityValue(for usage: AppUsage, at date: Date) -> String {
+        let reset = resetText(for: weeklyResetWindow(in: usage), at: date)
+        let freshness = providerStatus.isStale ? "cached or unavailable, " : ""
         switch provider {
         case .claude:
             let scoped = usage.scopedWeekly?.displayedPercentInt(mode: usageDisplay.mode)
             let scopedText = scoped.map { "\(usage.scopedLabel ?? "Fable") \($0) percent" }
                 ?? "Fable unavailable"
-            return "5 hour \(usage.fiveHour.displayedPercentInt(mode: usageDisplay.mode)) percent, "
+            return freshness + "5 hour \(usage.fiveHour.displayedPercentInt(mode: usageDisplay.mode)) percent, "
                 + "week \(usage.weekly.displayedPercentInt(mode: usageDisplay.mode)) percent, "
                 + "\(scopedText), weekly reset \(reset)"
         case .codex:
-            return "week \(codexWeeklyWindow.displayedPercentInt(mode: usageDisplay.mode)) percent, "
+            return freshness + "week \(codexWeeklyWindow(in: usage).displayedPercentInt(mode: usageDisplay.mode)) percent, "
                 + "weekly reset \(reset)"
         }
     }
@@ -631,7 +644,7 @@ private struct CompactUsageRing: View {
     }
 
     private var hasValue: Bool {
-        window.error == nil || window.usedPercent > 0
+        window.hasKnownValue
     }
 
     private func ringFraction(_ fraction: Double) -> Double {

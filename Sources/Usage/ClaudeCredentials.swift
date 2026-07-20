@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 /// Deep module owning Claude OAuth credential acquisition: the
 /// env → keychain flow, plus the in-app re-auth helpers. The usage fetcher
@@ -77,7 +78,10 @@ enum ClaudeCredentials {
     ///      relaunches; the access token expires after ~8h. When it has,
     ///      we surface "token expired" and wait for Claude Code to refresh
     ///      it — deliberately NOT refreshing ourselves (see the type doc).
-    static func resolveUsage(probe: (_ token: String, _ plan: String?) async -> ProbeOutcome) async -> Resolution {
+    static func resolveUsage(
+        now: Date = Date(),
+        probe: (_ token: String, _ plan: String?) async -> ProbeOutcome
+    ) async -> Resolution {
         let defaultError = "auth required — run claude"
         var lastError = defaultError
         // Plan tier ships in the keychain dict only — Anthropic's usage
@@ -102,8 +106,29 @@ enum ClaudeCredentials {
         }
 
         if let creds = cachedCreds {
+            let fingerprint = credentialFingerprint(creds.accessToken)
+            if let rejectedCredential,
+               rejectedCredential.fingerprint == fingerprint {
+                // Re-read on the next poll, but never hit Anthropic again with
+                // a credential the endpoint already rejected. A rotated token
+                // has a different fingerprint and resumes probing immediately.
+                clearCache()
+                if rejectedCredential.message == reauthRequiredMessage {
+                    return .reauthRequired(reauthRequiredMessage)
+                }
+                return .failed(rejectedCredential.message, retryAfter: nil)
+            }
+            if creds.isExpired(at: now) {
+                // The keychain carries the access-token expiry. Avoid turning
+                // a deterministic local condition into a 401 storm that can
+                // eventually trip Anthropic's account-level 429 limiter.
+                clearCache()
+                return .failed(tokenExpiredMessage, retryAfter: nil)
+            }
             switch await probe(creds.accessToken, plan) {
-            case .success(let u):       return .usage(u)
+            case .success(let u):
+                clearRejectedCredential()
+                return .usage(u)
             // The token is valid — the account is throttled. Re-probing only
             // doubles pressure on a limiter that is sticky once tripped
             // (429 + retry-after: 0 until the account goes quiet).
@@ -115,6 +140,7 @@ enum ClaudeCredentials {
             // otherwise a token Claude Code already rotated stays stale in
             // the cache forever and the chip never recovers.
             case .unauthorized:
+                rememberRejected(creds.accessToken, message: tokenExpiredMessage)
                 clearCache()
                 lastError = tokenExpiredMessage
             // A refresh re-issues the same scope set, so it cannot recover
@@ -122,6 +148,7 @@ enum ClaudeCredentials {
             // actually works. Clear the cache so the re-minted token from
             // `claude /login` is picked up on the next poll.
             case .scopeInsufficient:
+                rememberRejected(creds.accessToken, message: reauthRequiredMessage)
                 clearCache()
                 return .reauthRequired(reauthRequiredMessage)
             case .otherError(let e):    lastError = e
@@ -147,6 +174,24 @@ enum ClaudeCredentials {
         let account: String
         let accessToken: String
         let subscriptionType: String?
+        let expiresAt: Date?
+
+        init(
+            account: String,
+            accessToken: String,
+            subscriptionType: String?,
+            expiresAt: Date? = nil
+        ) {
+            self.account = account
+            self.accessToken = accessToken
+            self.subscriptionType = subscriptionType
+            self.expiresAt = expiresAt
+        }
+
+        func isExpired(at date: Date, clockSkew: TimeInterval = 30) -> Bool {
+            guard let expiresAt else { return false }
+            return expiresAt <= date.addingTimeInterval(clockSkew)
+        }
     }
 
     /// One decoded keychain item under the Claude service.
@@ -164,8 +209,26 @@ enum ClaudeCredentials {
     /// private) so ResolveUsageTests can prime it and assert the clearing.
     static var cachedClaudeCreds: ClaudeCreds?
 
+    private struct RejectedCredential {
+        let fingerprint: String
+        let message: String
+    }
+
+    /// Process-local only. We never persist or log a token-derived value.
+    /// Restarting allows one fresh probe; `expiresAt` still blocks known-expired
+    /// credentials before HTTP even across process launches.
+    private static var rejectedCredential: RejectedCredential?
+
     static func clearCache() {
         cachedClaudeCreds = nil
+    }
+
+    static func clearRejectedCredential() {
+        rejectedCredential = nil
+    }
+
+    static func credentialIsLocallyExpired(now: Date = Date()) -> Bool {
+        readClaudeCreds()?.isExpired(at: now) == true
     }
 
     /// Reads Claude Code's login from the file store or keychain, or nil if
@@ -219,16 +282,34 @@ enum ClaudeCredentials {
     /// multi-item selection. An empty-token item is a logged-out remnant,
     /// skipped so a later account still gets its chance.
     static func selectClaudeCreds(from candidates: [KeychainCandidate]) -> ClaudeCreds? {
-        for candidate in candidates {
+        let decoded = candidates.compactMap { candidate -> ClaudeCreds? in
             guard let oauth = candidate.blob["claudeAiOauth"] as? [String: Any],
-                  let access = oauth["accessToken"] as? String, !access.isEmpty else { continue }
+                  let access = oauth["accessToken"] as? String, !access.isEmpty else { return nil }
             return ClaudeCreds(
                 account: candidate.account,
                 accessToken: access,
-                subscriptionType: oauth["subscriptionType"] as? String
+                subscriptionType: oauth["subscriptionType"] as? String,
+                expiresAt: parseCredentialExpiry(oauth["expiresAt"])
             )
         }
-        return nil
+        let currentUser = NSUserName()
+        return decoded.max { lhs, rhs in
+            let lhsCurrent = lhs.account == currentUser
+            let rhsCurrent = rhs.account == currentUser
+            if lhsCurrent != rhsCurrent { return !lhsCurrent && rhsCurrent }
+            return (lhs.expiresAt ?? .distantPast) < (rhs.expiresAt ?? .distantPast)
+        }
+    }
+
+    /// Claude Code currently stores milliseconds since Unix epoch. Accept
+    /// seconds too so older/newer credential writers do not silently disable
+    /// the local-expiry guard.
+    static func parseCredentialExpiry(_ raw: Any?) -> Date? {
+        guard let number = raw as? NSNumber else { return nil }
+        var seconds = number.doubleValue
+        guard seconds.isFinite, seconds > 0 else { return nil }
+        if seconds > 10_000_000_000 { seconds /= 1000 }
+        return Date(timeIntervalSince1970: seconds)
     }
 
     /// Preserve Claude Code's credential-store precedence without eagerly
@@ -370,6 +451,17 @@ enum ClaudeCredentials {
         } catch {
             return nil
         }
+    }
+
+    private static func rememberRejected(_ token: String, message: String) {
+        rejectedCredential = RejectedCredential(
+            fingerprint: credentialFingerprint(token),
+            message: message
+        )
+    }
+
+    private static func credentialFingerprint(_ token: String) -> String {
+        SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Account name for an existing Claude Code credential item, from the

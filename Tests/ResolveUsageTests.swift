@@ -308,6 +308,10 @@ struct ResolveUsageTests {
                "T10 snapshot restores scoped model label")
         expect(hydrated.claude?.usage.weekly.resetAt == Date(timeIntervalSince1970: 20_000),
                "T10 snapshot restores reset time")
+        expect(hydrated.claude?.usage.weekly.observedAt == snapshotNow,
+               "T10 legacy snapshot inherits its provider observation time")
+        expect(hydrated.claude?.usage.weekly.source == .migratedCache,
+               "T10 legacy snapshot is explicitly marked as migrated cache")
 
         UsageSnapshotStore.recordCodex(AppUsage(
             fiveHour: WindowUsage(
@@ -329,7 +333,105 @@ struct ResolveUsageTests {
                "T10 expired snapshot short window is not revived")
         expect(sanitizedSnapshot.codex?.usage.weekly.percentInt == 44,
                "T10 valid snapshot weekly window survives")
+
+        let afterAllClaudeResets = UsageSnapshotStore.load(
+            now: Date(timeIntervalSince1970: 20_100),
+            defaults: defaults
+        )
+        expect(afterAllClaudeResets.claude?.usage.fiveHour.hasKnownValue == false,
+               "T10 elapsed Claude 5h cycle cannot retain its old percent")
+        expect(afterAllClaudeResets.claude?.usage.weekly.hasKnownValue == false,
+               "T10 elapsed Claude weekly cycle cannot retain its old percent")
+        expect(afterAllClaudeResets.claude?.usage.scopedWeekly?.hasKnownValue == false,
+               "T10 elapsed scoped cycle cannot retain its old percent")
+        expect(afterAllClaudeResets.claude?.usage.scopedLabel == "Fable",
+               "T10 expired scoped cycle keeps its known display slot")
         defaults.removePersistentDomain(forName: suiteName)
+
+        // T11 — local credential expiry and rejected-token suppression. The
+        // app must remain read-only and avoid turning a deterministic expired
+        // token into a 401-every-5m storm. A rotated token fingerprint resumes
+        // probing without requiring an app restart.
+        let authNow = Date(timeIntervalSince1970: 50_000)
+        unsetenv("CLAUDE_CODE_OAUTH_TOKEN")
+        ClaudeCredentials.clearRejectedCredential()
+        ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
+            account: "test-stub",
+            accessToken: "expired-token",
+            subscriptionType: "max",
+            expiresAt: authNow.addingTimeInterval(-1)
+        )
+        let expiredCounter = ProbeCounter()
+        let expiredResolution = await ClaudeCredentials.resolveUsage(now: authNow) { _, _ in
+            expiredCounter.calls += 1
+            return .success(fetched)
+        }
+        expect(expiredCounter.calls == 0, "T11 locally expired token makes no HTTP probe")
+        if case .failed(let message, _) = expiredResolution {
+            expect(message == ClaudeCredentials.tokenExpiredMessage,
+                   "T11 locally expired token reports tokenExpiredMessage")
+        } else {
+            expect(false, "T11 locally expired token reports tokenExpiredMessage")
+        }
+
+        ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
+            account: "test-stub",
+            accessToken: "rejected-token-A",
+            subscriptionType: "max",
+            expiresAt: authNow.addingTimeInterval(3600)
+        )
+        let rejectedCounter = ProbeCounter()
+        _ = await ClaudeCredentials.resolveUsage(now: authNow) { _, _ in
+            rejectedCounter.calls += 1
+            return .unauthorized
+        }
+        ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
+            account: "test-stub",
+            accessToken: "rejected-token-A",
+            subscriptionType: "max",
+            expiresAt: authNow.addingTimeInterval(3600)
+        )
+        _ = await ClaudeCredentials.resolveUsage(now: authNow) { _, _ in
+            rejectedCounter.calls += 1
+            return .success(fetched)
+        }
+        expect(rejectedCounter.calls == 1,
+               "T11 unchanged rejected token is not probed twice")
+
+        ClaudeCredentials.cachedClaudeCreds = ClaudeCredentials.ClaudeCreds(
+            account: "test-stub",
+            accessToken: "rotated-token-B",
+            subscriptionType: "max",
+            expiresAt: authNow.addingTimeInterval(7200)
+        )
+        let rotatedResolution = await ClaudeCredentials.resolveUsage(now: authNow) { _, _ in
+            rejectedCounter.calls += 1
+            return .success(fetched)
+        }
+        expect(rejectedCounter.calls == 2, "T11 rotated token resumes probing")
+        if case .usage = rotatedResolution {
+            expect(true, "T11 rotated token can recover usage")
+        } else {
+            expect(false, "T11 rotated token can recover usage")
+        }
+        ClaudeCredentials.clearCache()
+        ClaudeCredentials.clearRejectedCredential()
+        setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-stub-token", 1)
+
+        let parsedExpiry = ClaudeCredentials.parseCredentialExpiry(1_784_404_512_681 as NSNumber)
+        expect(parsedExpiry == Date(timeIntervalSince1970: 1_784_404_512.681),
+               "T11 millisecond credential expiry parses")
+
+        // T12 — schema drift and unknown-display behavior. Missing utilization
+        // is unavailable, never fabricated as 0%; remaining mode must not turn
+        // that sentinel into a full 100% ring.
+        let malformedWindow = UsageFetcher.parseClaudeWindow([
+            "resets_at": "2026-07-20T00:00:00Z",
+        ])
+        expect(!malformedWindow.hasKnownValue,
+               "T12 Claude window without utilization is unknown")
+        expect(malformedWindow.displayedPercentInt(mode: .remaining) == 0,
+               "T12 unknown remains unavailable in remaining mode")
 
         if failures > 0 {
             print("\(failures) failure(s)")

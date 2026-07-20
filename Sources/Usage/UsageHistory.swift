@@ -63,6 +63,20 @@ final class UsageHistoryStore: ObservableObject {
         }
     }
 
+    /// Record one independently observed window (currently Claude's local 5h
+    /// session-limit fallback). This must not append cached weekly/Fable values
+    /// as if the whole provider had just refreshed.
+    func record(
+        provider: AlertEngine.Provider,
+        window: UsageWindow,
+        reading: WindowUsage,
+        at: Date
+    ) {
+        guard append(provider, window, reading, at) else { return }
+        persist()
+        revision &+= 1
+    }
+
     /// Readings for one series, oldest first. The latest entry is the most
     /// recent successful poll.
     func samples(provider: AlertEngine.Provider, window: UsageWindow) -> [UsageSample] {
@@ -97,7 +111,11 @@ final class UsageHistoryStore: ObservableObject {
         guard reading.error == nil else { return false }
         let k = key(provider, window)
         var arr = series[k] ?? []
+        if arr.contains(where: { $0.at == at && abs($0.used - reading.usedPercent) < 0.000_001 }) {
+            return false
+        }
         arr.append(UsageSample(at: at, used: max(0, min(1, reading.usedPercent))))
+        arr.sort { $0.at < $1.at }
         let cutoff = at.addingTimeInterval(-Self.maxAge)
         arr.removeAll { $0.at < cutoff }
         if arr.count > Self.maxSamples { arr.removeFirst(arr.count - Self.maxSamples) }

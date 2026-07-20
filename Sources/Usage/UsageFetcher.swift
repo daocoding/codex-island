@@ -167,15 +167,35 @@ enum UsageFetcher {
     /// `ClaudeCredentials`. We hand it the usage probe and render its
     /// resolution: a parsed `AppUsage`, or an error caption (re-auth or last
     /// error) via `errorPair`.
-    static func fetchClaude() async -> AppUsage {
+    static func fetchClaude() async -> UsageFetchResult {
         let resolution = await ClaudeCredentials.resolveUsage { token, plan in
             await fetchClaudeUsage(token: token, plan: plan)
         }
         switch resolution {
-        case .usage(let u):              return u
-        case .reauthRequired(let msg):   return errorPair(msg)
+        case .usage(let usage):
+            return .success(usage)
+        case .reauthRequired(let message):
+            return .failure(UsageFetchFailure(
+                kind: .reauthenticationRequired,
+                message: message
+            ))
         case .failed(let msg, let retryAfter):
-            return errorPair(msg, retryAfter: retryAfter)
+            let kind: UsageFailureKind
+            switch msg {
+            case ClaudeCredentials.tokenExpiredMessage:
+                kind = .authenticationExpired
+            case ClaudeCredentials.rateLimitedMessage:
+                kind = .rateLimited
+            case ClaudeCredentials.reauthRequiredMessage:
+                kind = .reauthenticationRequired
+            default:
+                kind = .other
+            }
+            return .failure(UsageFetchFailure(
+                kind: kind,
+                message: msg,
+                retryAfter: retryAfter
+            ))
         }
     }
 
@@ -209,14 +229,23 @@ enum UsageFetcher {
                    let type = err["type"] as? String, type == "rate_limit_error" {
                     return .rateLimited(retryAfter: retryAfter(from: http))
                 }
+                let fiveHour = parseClaudeWindow(obj["five_hour"])
+                let weekly = parseClaudeWindow(obj["seven_day"])
                 let scoped = parseClaudeScopedWeekly(obj)
-                return .success(AppUsage(
-                    fiveHour: parseClaudeWindow(obj["five_hour"]),
-                    weekly: parseClaudeWindow(obj["seven_day"]),
+                let usage = AppUsage(
+                    fiveHour: fiveHour,
+                    weekly: weekly,
                     plan: plan,
                     scopedWeekly: scoped?.window,
                     scopedLabel: scoped?.label
-                ))
+                )
+                guard usage.hasKnownValue else {
+                    // A 200 with an unfamiliar/missing percentage schema is
+                    // not a real 0% reading. Preserve the last useful snapshot
+                    // and surface one provider parse failure instead.
+                    return .otherError("parse error")
+                }
+                return .success(usage)
             }
             return .otherError("parse error")
         } catch {
@@ -243,14 +272,16 @@ enum UsageFetcher {
         parseRetryAfter(response.value(forHTTPHeaderField: "Retry-After"))
     }
 
-    private static func parseClaudeWindow(_ obj: Any?) -> WindowUsage {
+    static func parseClaudeWindow(_ obj: Any?) -> WindowUsage {
         guard let d = obj as? [String: Any] else { return .unknown }
         // Anthropic returns `utilization` as a percentage in [0, 100], not a
         // normalized [0, 1] fraction. An earlier `raw > 1 ? raw / 100 : raw`
         // heuristic broke the moment the 5h window reset: utilization values
         // in (0, 1] (e.g. 0.5% used → 0.5) were treated as already-normalized
         // and rendered as 50%–100%. Always divide by 100; clamp below.
-        let raw = (d["utilization"] as? Double) ?? (d["used_percent"] as? Double) ?? 0
+        guard let raw = (d["utilization"] as? NSNumber)?.doubleValue
+            ?? (d["used_percent"] as? NSNumber)?.doubleValue
+        else { return .unknown }
         let normalized = raw / 100.0
         return WindowUsage(
             usedPercent: min(1, max(0, normalized)),

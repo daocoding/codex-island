@@ -11,18 +11,29 @@ final class UsageStore: ObservableObject {
     private init() {
         let now = Date()
         let snapshot = UsageSnapshotStore.load(now: now)
-        if let cachedClaude = snapshot.claude?.usage
-            ?? UsageHistoryStore.shared.latestUsage(provider: .claude, now: now) {
+        if let record = snapshot.claude {
+            claude = record.usage
+            claudeStatus = .cached(at: record.at)
+        } else if let cachedClaude = UsageHistoryStore.shared.latestUsage(provider: .claude, now: now) {
             claude = cachedClaude
+            claudeStatus = .cached(at: nil)
         }
-        if let cachedCodex = snapshot.codex?.usage
-            ?? UsageHistoryStore.shared.latestUsage(provider: .codex, now: now) {
+        if let record = snapshot.codex {
+            codex = record.usage
+            codexStatus = .cached(at: record.at)
+        } else if let cachedCodex = UsageHistoryStore.shared.latestUsage(provider: .codex, now: now) {
             codex = cachedCodex
+            codexStatus = .cached(at: nil)
         }
 
         if let stored = UserDefaults.standard.object(forKey: Self.claudeCooldownKey) as? Date,
            stored > now {
             claudeCooldownUntil = stored
+            claudeStatus.failure = UsageFetchFailure(
+                kind: .rateLimited,
+                message: ClaudeCredentials.rateLimitedMessage
+            )
+            claudeStatus.retryAt = stored
         } else {
             claudeCooldownUntil = nil
             UserDefaults.standard.removeObject(forKey: Self.claudeCooldownKey)
@@ -31,7 +42,12 @@ final class UsageStore: ObservableObject {
 
     @Published var claude: AppUsage = .empty
     @Published var codex: AppUsage = .empty
+    @Published var claudeStatus: UsageProviderStatus = .idle
+    @Published var codexStatus: UsageProviderStatus = .idle
     @Published var codexResetCredits: CodexResetCredits = .empty
+    /// Most recent completed poll, successful or not. Provider-specific
+    /// `lastSuccessAt` values remain the source of truth for freshness.
+    @Published var lastRefreshAt: Date?
     @Published var lastUpdated: Date?
     @Published var loading = false
     /// Set while a `claude auth login` flow is in progress (spawned + still
@@ -72,6 +88,13 @@ final class UsageStore: ObservableObject {
         }
     }
 
+    func status(for provider: AlertEngine.Provider) -> UsageProviderStatus {
+        switch provider {
+        case .claude: return claudeStatus
+        case .codex: return codexStatus
+        }
+    }
+
     func refresh() {
         if loading { return }
         // Demo mode for screen recordings: skip the network entirely and
@@ -93,7 +116,7 @@ final class UsageStore: ObservableObject {
                     error: nil
                 ),
                 plan: "max"
-            )
+            ).observed(at: now, source: .api)
             self.codex = AppUsage(
                 fiveHour: WindowUsage(
                     usedPercent: 0.67,
@@ -106,7 +129,7 @@ final class UsageStore: ObservableObject {
                     error: nil
                 ),
                 plan: "pro"
-            )
+            ).observed(at: now, source: .api)
             self.codexResetCredits = CodexResetCredits(
                 availableCount: 2,
                 credits: [
@@ -126,26 +149,46 @@ final class UsageStore: ObservableObject {
                     )
                 ]
             )
+            self.claudeStatus = UsageProviderStatus(
+                source: .live,
+                lastAttemptAt: now,
+                lastSuccessAt: now,
+                failure: nil,
+                retryAt: nil
+            )
+            self.codexStatus = UsageProviderStatus(
+                source: .live,
+                lastAttemptAt: now,
+                lastSuccessAt: now,
+                failure: nil,
+                retryAt: nil
+            )
             self.lastUpdated = now
+            self.lastRefreshAt = now
             return
         }
 
         loading = true
         refreshTask?.cancel()
         refreshTask = Task {
+            let attemptAt = Date()
             async let codexResult = UsageFetcher.fetchCodex()
             async let codexResetCreditsResult = UsageFetcher.fetchCodexResetCredits()
-            let coolingDown = claudeCooldownUntil.map { Date() < $0 } ?? false
-            var cl: AppUsage?
-            var localSessionLimit: ClaudeSessionLimitFallback.Event?
-            if !coolingDown {
-                cl = await UsageFetcher.fetchClaude()
-            } else {
-                localSessionLimit = await Task.detached(priority: .utility) {
-                    ClaudeSessionLimitFallback.latestActive()
-                }.value
+            var coolingDown = claudeCooldownUntil.map { attemptAt < $0 } ?? false
+            if coolingDown, ClaudeCredentials.credentialIsLocallyExpired(now: attemptAt) {
+                // This check deliberately happens after `UsageStore.shared`
+                // has completed initialization. `/usr/bin/security` waits by
+                // pumping the main run loop; doing that inside a static
+                // singleton initializer lets SwiftUI recursively request the
+                // same dispatch_once token and crashes at launch.
+                self.claudeCooldownUntil = nil
+                coolingDown = false
             }
-            let c = await codexResult
+            var claudeResult: UsageFetchResult?
+            if !coolingDown {
+                claudeResult = await UsageFetcher.fetchClaude()
+            }
+            let fetchedCodex = await codexResult
             let codexResetCredits = await codexResetCreditsResult
 
             // Cancellation = network monitor saw the path come up while we
@@ -157,119 +200,150 @@ final class UsageStore: ObservableObject {
                 return
             }
 
-            // Don't clobber existing good values when a fetch returns an
-            // all-error result. A transient 429 shouldn't blank the panel
-            // back to "0%" — that's worse than slightly stale data. But if
-            // the existing value is itself error-only (cold start sitting
-            // on `.empty`, or a series of failures), let the new error
-            // through — otherwise a single bad first fetch sticks "no data"
-            // permanently even after the network recovers.
-            if !UsageStore.isErrorOnly(c) || UsageStore.isErrorOnly(self.codex) {
-                self.codex = c
+            let now = Date()
+            // Reset-cycle validity is part of every reconciliation, including
+            // failure/cooldown polls. Old percentages can never survive their
+            // reset boundary merely because the app stayed running.
+            self.claude = UsageSnapshotStore.sanitizedUsage(self.claude, now: now)
+            self.codex = UsageSnapshotStore.sanitizedUsage(self.codex, now: now)
+
+            var anyProviderSucceeded = false
+
+            if UsageStore.isErrorOnly(fetchedCodex) {
+                let message = fetchedCodex.fiveHour.error
+                    ?? fetchedCodex.weekly.error
+                    ?? "unavailable"
+                self.codexStatus = UsageProviderStatus(
+                    source: self.codex.hasKnownValue ? .cached : .idle,
+                    lastAttemptAt: attemptAt,
+                    lastSuccessAt: self.codexStatus.lastSuccessAt,
+                    failure: UsageFetchFailure(
+                        kind: message.contains("auth") ? .authenticationExpired : .other,
+                        message: message
+                    ),
+                    retryAt: nil
+                )
+            } else {
+                let fresh = UsageSnapshotStore.sanitizedUsage(
+                    fetchedCodex.observed(at: now, source: .api),
+                    now: now
+                )
+                self.codex = fresh
+                self.codexStatus = UsageProviderStatus(
+                    source: .live,
+                    lastAttemptAt: attemptAt,
+                    lastSuccessAt: now,
+                    failure: nil,
+                    retryAt: nil
+                )
+                UsageHistoryStore.shared.record(provider: .codex, usage: fresh, at: now)
+                UsageSnapshotStore.recordCodex(fresh, at: now)
+                anyProviderSucceeded = true
             }
-            var claudeForHistory: AppUsage?
-            if let cl {
-                if UsageStore.isRateLimited(cl) {
-                    let requested = cl.retryAfter ?? UsageStore.fallbackRateLimitCooldown
-                    let cooldown = max(UsageStore.fallbackRateLimitCooldown, requested + 5)
-                    self.claudeCooldownUntil = Date().addingTimeInterval(cooldown)
-                    localSessionLimit = await Task.detached(priority: .utility) {
-                        ClaudeSessionLimitFallback.latestActive()
-                    }.value
-                    NSLog("CodexIsland: Claude usage rate-limited; skipping Claude fetches for %.0fs", cooldown)
-                } else {
+
+            if let claudeResult {
+                switch claudeResult {
+                case .success(let fetched):
                     self.claudeCooldownUntil = nil
+                    let fresh = UsageSnapshotStore.sanitizedUsage(
+                        fetched.observed(at: now, source: .api),
+                        now: now
+                    )
+                    self.claude = fresh
+                    self.claudeStatus = UsageProviderStatus(
+                        source: .live,
+                        lastAttemptAt: attemptAt,
+                        lastSuccessAt: now,
+                        failure: nil,
+                        retryAt: nil
+                    )
+                    UsageHistoryStore.shared.record(provider: .claude, usage: fresh, at: now)
+                    UsageSnapshotStore.recordClaude(fresh, at: now)
+                    anyProviderSucceeded = true
+
+                case .failure(let failure):
+                    var retryAt: Date?
+                    if failure.kind == .rateLimited {
+                        let requested = failure.retryAfter ?? UsageStore.fallbackRateLimitCooldown
+                        let cooldown = max(UsageStore.fallbackRateLimitCooldown, requested + 5)
+                        retryAt = now.addingTimeInterval(cooldown)
+                        self.claudeCooldownUntil = retryAt
+                        NSLog(
+                            "CodexIsland: Claude usage rate-limited; skipping Claude fetches for %.0fs",
+                            cooldown
+                        )
+                    } else {
+                        self.claudeCooldownUntil = nil
+                    }
+                    let localSessionLimit = await Task.detached(priority: .utility) {
+                        ClaudeSessionLimitFallback.latestActive(now: now)
+                    }.value
+                    let usedLocalFallback = self.apply(localSessionLimit)
+                    self.claudeStatus = UsageProviderStatus(
+                        source: usedLocalFallback
+                            ? .mixedLocalFallback
+                            : (self.claude.hasKnownValue ? .cached : .idle),
+                        lastAttemptAt: attemptAt,
+                        lastSuccessAt: self.claudeStatus.lastSuccessAt,
+                        failure: failure,
+                        retryAt: retryAt
+                    )
                 }
-                if let localSessionLimit {
-                    let inferred = UsageStore.applying(localSessionLimit, to: self.claude)
-                    self.claude = inferred
-                    claudeForHistory = inferred
-                } else if !UsageStore.isErrorOnly(cl) || UsageStore.isErrorOnly(self.claude) {
-                    self.claude = cl
-                    claudeForHistory = cl
-                } else {
-                    self.claude = UsageStore.applyingError(from: cl, to: self.claude)
-                }
-            } else if let localSessionLimit {
-                let inferred = UsageStore.applying(localSessionLimit, to: self.claude)
-                self.claude = inferred
-                claudeForHistory = inferred
-            } else if coolingDown,
-                      self.claude.fiveHour.usedPercent >= 0.999,
-                      let resetAt = self.claude.fiveHour.resetAt,
-                      resetAt <= Date() {
-                // The locally observed full session has reset, but the API is
-                // still cooling down. Stop showing 100% as current.
-                self.claude.fiveHour = WindowUsage(
-                    usedPercent: 0,
-                    resetAt: nil,
-                    error: ClaudeCredentials.rateLimitedMessage
+            } else {
+                let failure = UsageFetchFailure(
+                    kind: .rateLimited,
+                    message: ClaudeCredentials.rateLimitedMessage
+                )
+                let localSessionLimit = await Task.detached(priority: .utility) {
+                    ClaudeSessionLimitFallback.latestActive(now: now)
+                }.value
+                let usedLocalFallback = self.apply(localSessionLimit)
+                self.claudeStatus = UsageProviderStatus(
+                    source: usedLocalFallback
+                        ? .mixedLocalFallback
+                        : (self.claude.hasKnownValue ? .cached : .idle),
+                    lastAttemptAt: attemptAt,
+                    lastSuccessAt: self.claudeStatus.lastSuccessAt,
+                    failure: failure,
+                    retryAt: self.claudeCooldownUntil
                 )
             }
+
             if let codexResetCredits {
                 self.codexResetCredits = codexResetCredits
             }
-
-            // Record this poll's readings so the SparkChart can plot real
-            // history. `record` keeps only non-errored windows, so a failed
-            // or rate-limited fetch leaves a gap instead of a flat fake line.
-            let now = Date()
-            UsageHistoryStore.shared.record(provider: .codex, usage: c, at: now)
-            if !UsageStore.isErrorOnly(c) {
-                UsageSnapshotStore.recordCodex(c, at: now)
-            }
-            if let claudeForHistory {
-                UsageHistoryStore.shared.record(provider: .claude, usage: claudeForHistory, at: now)
-                UsageSnapshotStore.recordClaude(claudeForHistory, at: now)
-            }
-            self.lastUpdated = now
+            if anyProviderSucceeded { self.lastUpdated = now }
+            self.lastRefreshAt = now
             self.loading = false
         }
     }
 
-    /// True when both windows have errors and zero values — nothing useful
-    /// to show, so we keep whatever we had before.
+    /// Fetchers use `.unknown` for missing windows; a valid scoped/Fable-only
+    /// response still counts as success.
     private static func isErrorOnly(_ u: AppUsage) -> Bool {
-        u.fiveHour.error != nil && u.weekly.error != nil
-            && u.fiveHour.usedPercent == 0 && u.weekly.usedPercent == 0
+        !u.hasKnownValue
     }
 
-    /// True when the fetch resolved to the rate-limited error (both windows
-    /// carry the same message — see `UsageFetcher.errorPair`).
-    private static func isRateLimited(_ u: AppUsage) -> Bool {
-        u.fiveHour.error == ClaudeCredentials.rateLimitedMessage
-            && u.weekly.error == ClaudeCredentials.rateLimitedMessage
-    }
-
-    /// Replace only Claude's short window. Weekly and model-scoped readings
-    /// remain the last API-confirmed values while the shared endpoint rests.
-    private static func applying(
-        _ event: ClaudeSessionLimitFallback.Event,
-        to usage: AppUsage
-    ) -> AppUsage {
-        var updated = usage
-        updated.fiveHour = WindowUsage(usedPercent: 1, resetAt: event.resetAt, error: nil)
-        updated.shortWindowLabel = "5h"
-        return updated
-    }
-
-    /// Preserve the last useful numbers while surfacing the fresh fetch
-    /// failure in expanded UI. A 401/403/429 should not make the notch look
-    /// empty, but it also should not masquerade as live provider data.
-    private static func applyingError(from failed: AppUsage, to usage: AppUsage) -> AppUsage {
-        guard let message = failed.fiveHour.error ?? failed.weekly.error else { return usage }
-        var updated = usage
-        updated.fiveHour = carrying(message, on: usage.fiveHour)
-        updated.weekly = carrying(message, on: usage.weekly)
-        if let scoped = usage.scopedWeekly {
-            updated.scopedWeekly = carrying(message, on: scoped)
-        }
-        updated.retryAfter = failed.retryAfter
-        return updated
-    }
-
-    private static func carrying(_ error: String, on window: WindowUsage) -> WindowUsage {
-        WindowUsage(usedPercent: window.usedPercent, resetAt: window.resetAt, error: error)
+    /// Apply only the locally proven 5h limit. Never re-timestamp or persist
+    /// cached weekly/Fable data as part of this one-window fallback.
+    @discardableResult
+    private func apply(_ event: ClaudeSessionLimitFallback.Event?) -> Bool {
+        guard let event else { return false }
+        claude.fiveHour = WindowUsage(
+            usedPercent: 1,
+            resetAt: event.resetAt,
+            error: nil,
+            observedAt: event.occurredAt,
+            source: .localSessionLimit
+        )
+        claude.shortWindowLabel = "5h"
+        UsageHistoryStore.shared.record(
+            provider: .claude,
+            window: .fiveHour,
+            reading: claude.fiveHour,
+            at: event.occurredAt
+        )
+        return true
     }
 
     /// Replace current usage values with hand-tuned percentages so the
@@ -294,7 +368,7 @@ final class UsageStore: ObservableObject {
                 error: nil
             ),
             plan: claude.plan ?? "max"
-        )
+        ).observed(at: now, source: .api)
         self.codex = AppUsage(
             fiveHour: WindowUsage(
                 usedPercent: codexFiveHour,
@@ -307,8 +381,23 @@ final class UsageStore: ObservableObject {
                 error: nil
             ),
             plan: codex.plan ?? "pro"
+        ).observed(at: now, source: .api)
+        self.claudeStatus = UsageProviderStatus(
+            source: .live,
+            lastAttemptAt: now,
+            lastSuccessAt: now,
+            failure: nil,
+            retryAt: nil
+        )
+        self.codexStatus = UsageProviderStatus(
+            source: .live,
+            lastAttemptAt: now,
+            lastSuccessAt: now,
+            failure: nil,
+            retryAt: nil
         )
         self.lastUpdated = now
+        self.lastRefreshAt = now
     }
 
     /// Spawn `claude auth login` and poll for the keychain to update.
@@ -333,14 +422,28 @@ final class UsageStore: ObservableObject {
                 // The whole point of this loop is to catch the keychain item
                 // `claude auth login` just rewrote — never serve the cache.
                 ClaudeCredentials.clearCache()
-                let cl = await UsageFetcher.fetchClaude()
+                let result = await UsageFetcher.fetchClaude()
                 if Task.isCancelled { return }
-                if cl.fiveHour.error == nil || cl.weekly.error == nil {
+                if case .success(let fetched) = result {
                     await MainActor.run {
                         let now = Date()
-                        self?.claude = cl
-                        UsageSnapshotStore.recordClaude(cl, at: now)
+                        let fresh = UsageSnapshotStore.sanitizedUsage(
+                            fetched.observed(at: now, source: .api),
+                            now: now
+                        )
+                        self?.claude = fresh
+                        self?.claudeStatus = UsageProviderStatus(
+                            source: .live,
+                            lastAttemptAt: now,
+                            lastSuccessAt: now,
+                            failure: nil,
+                            retryAt: nil
+                        )
+                        self?.claudeCooldownUntil = nil
+                        UsageHistoryStore.shared.record(provider: .claude, usage: fresh, at: now)
+                        UsageSnapshotStore.recordClaude(fresh, at: now)
                         self?.lastUpdated = now
+                        self?.lastRefreshAt = now
                         self?.claudeReauthInProgress = false
                     }
                     return

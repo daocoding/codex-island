@@ -493,7 +493,7 @@ struct SettingsView: View {
             sectionLabel("Providers")
             SettingsRow(
                 title: "Claude",
-                subtitle: providerSubtitle(usage.claude),
+                subtitle: providerSubtitle(usage.claude, status: usage.claudeStatus),
                 dot: IslandColor.claude,
                 chip: usage.claude.plan?.uppercased()
             ) {
@@ -505,7 +505,7 @@ struct SettingsView: View {
             }
             SettingsRow(
                 title: "Codex",
-                subtitle: providerSubtitle(usage.codex),
+                subtitle: providerSubtitle(usage.codex, status: usage.codexStatus),
                 dot: IslandColor.codex,
                 chip: usage.codex.plan?.uppercased()
             ) {
@@ -775,20 +775,37 @@ struct SettingsView: View {
 
     // MARK: - Subtitle composition
 
-    private func providerSubtitle(_ u: AppUsage) -> String {
+    private func providerSubtitle(_ u: AppUsage, status: UsageProviderStatus) -> String {
         let synced: String = {
-            guard let updated = usage.lastUpdated else { return L10n.tr("idle") }
-            return L10n.tr("synced %@", Self.relativeFormatter.localizedString(for: updated, relativeTo: Date()))
+            guard let updated = status.lastSuccessAt else {
+                return status.failure == nil ? L10n.tr("idle") : L10n.tr("unavailable")
+            }
+            let relative = Self.relativeFormatter.localizedString(for: updated, relativeTo: Date())
+            return status.isLive
+                ? L10n.tr("synced %@", relative)
+                : L10n.tr("cached %@", relative)
         }()
         var windows: [WindowUsage] = []
         if u.shortWindowLabel != nil { windows.append(u.fiveHour) }
         if u.weeklyWindowLabel != nil { windows.append(u.weekly) }
         let nums = windows.map(windowCaption).joined(separator: " / ")
-        return "\(synced) · \(nums)"
+        var parts = [synced]
+        if !nums.isEmpty { parts.append(nums) }
+        if let failure = status.failure { parts.append("⚠ \(failureCaption(failure))") }
+        return parts.joined(separator: " · ")
     }
 
     private func windowCaption(_ w: WindowUsage) -> String {
-        if let err = w.error, w.percentInt == 0 { return "⚠ \(err)" }
+        guard w.hasKnownValue else { return "—" }
         return "\(w.displayedPercentInt(mode: usageDisplay.mode))%"
+    }
+
+    private func failureCaption(_ failure: UsageFetchFailure) -> String {
+        switch failure.kind {
+        case .authenticationExpired: return L10n.tr("sign-in expired")
+        case .reauthenticationRequired: return L10n.tr("sign-in needs renewal")
+        case .rateLimited: return L10n.tr("rate limited")
+        case .transport, .other: return failure.message
+        }
     }
 }

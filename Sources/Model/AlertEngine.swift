@@ -81,6 +81,8 @@ final class AlertEngine: ObservableObject {
         let triggers: [AnyPublisher<Void, Never>] = [
             UsageStore.shared.$claude.map { _ in () }.eraseToAnyPublisher(),
             UsageStore.shared.$codex.map { _ in () }.eraseToAnyPublisher(),
+            UsageStore.shared.$claudeStatus.map { _ in () }.eraseToAnyPublisher(),
+            UsageStore.shared.$codexStatus.map { _ in () }.eraseToAnyPublisher(),
             AlertThresholdStore.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
             ProviderVisibilityStore.shared.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
         ]
@@ -114,12 +116,15 @@ final class AlertEngine: ObservableObject {
             AlertDecision.WindowInput(
                 provider: .claude,
                 visible: visibility.claudeVisible,
-                window: usage.claude.fiveHour
+                window: usage.claude.fiveHour,
+                fresh: usage.claudeStatus.isLive
+                    || usage.claude.fiveHour.source == .localSessionLimit
             ),
             AlertDecision.WindowInput(
                 provider: .codex,
                 visible: visibility.codexVisible,
-                window: usage.codex.headlineWindow
+                window: usage.codex.headlineWindow,
+                fresh: usage.codexStatus.isLive
             ),
         ]
 
@@ -211,6 +216,7 @@ enum AlertDecision {
         let provider: AlertEngine.Provider
         let visible: Bool
         let window: WindowUsage
+        let fresh: Bool
     }
 
     /// Returns severity per visible window whose percent meets at least the
@@ -219,15 +225,13 @@ enum AlertDecision {
     static func computeSeverity(
         inputs: [WindowInput],
         warning: Int,
-        critical: Int
+        critical: Int,
+        now: Date = Date()
     ) -> [AlertEngine.Provider: AlertEngine.Severity] {
         var out: [AlertEngine.Provider: AlertEngine.Severity] = [:]
         for input in inputs {
-            guard input.visible else { continue }
-            // Treat error-only states (no value, error set) as "no signal".
-            if input.window.error != nil && input.window.usedPercent == 0 {
-                continue
-            }
+            guard input.visible, input.fresh, input.window.hasKnownValue else { continue }
+            if let resetAt = input.window.resetAt, resetAt <= now { continue }
             let pct = input.window.percentInt
             if pct >= critical {
                 out[input.provider] = .critical
@@ -258,7 +262,8 @@ enum AlertDecision {
         inputs: [WindowInput],
         warning: Int,
         critical: Int,
-        warmedUp: Bool
+        warmedUp: Bool,
+        now: Date = Date()
     ) -> CrossingsEvalResult {
         var next = previous
 
@@ -278,11 +283,8 @@ enum AlertDecision {
         var maxSeverity: AlertEngine.Severity = .none
 
         for input in inputs {
-            guard input.visible else { continue }
-            guard let resetAt = input.window.resetAt else { continue }
-            if input.window.error != nil && input.window.usedPercent == 0 {
-                continue
-            }
+            guard input.visible, input.fresh, input.window.hasKnownValue else { continue }
+            guard let resetAt = input.window.resetAt, resetAt > now else { continue }
             let pct = input.window.percentInt
 
             for threshold in [AlertEngine.Threshold.warning, AlertEngine.Threshold.critical] {

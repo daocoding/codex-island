@@ -54,7 +54,7 @@ final class AiosBroadcaster {
             endpoint,
             owner
         )
-        UsageStore.shared.$lastUpdated
+        UsageStore.shared.$lastRefreshAt
             .compactMap { $0 }
             .removeDuplicates()
             .sink { [weak self] _ in self?.broadcast() }
@@ -63,7 +63,7 @@ final class AiosBroadcaster {
         // subscribed (likely — App.swift starts the store first), broadcast
         // immediately. Otherwise the first user-visible broadcast waits a
         // full poll interval (default 5 min).
-        if UsageStore.shared.lastUpdated != nil {
+        if UsageStore.shared.lastRefreshAt != nil {
             NSLog("AiosBroadcaster.start: catching up an already-fresh refresh")
             broadcast()
         }
@@ -81,6 +81,8 @@ final class AiosBroadcaster {
         let host = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         let claude = UsageStore.shared.claude
         let codex = UsageStore.shared.codex
+        let claudeStatus = UsageStore.shared.claudeStatus
+        let codexStatus = UsageStore.shared.codexStatus
 
         Task.detached { [endpoint, owner, host] in
             await Self.send(
@@ -90,6 +92,7 @@ final class AiosBroadcaster {
                 tier: "claude-\(claude.plan ?? "max")",
                 label: "\(owner.capitalized) · Claude \((claude.plan ?? "max").capitalized)",
                 app: claude,
+                status: claudeStatus,
                 host: host
             )
             await Self.send(
@@ -99,6 +102,7 @@ final class AiosBroadcaster {
                 tier: "codex-\(codex.plan ?? "plus")",
                 label: "\(owner.capitalized) · Codex \((codex.plan ?? "plus").capitalized)",
                 app: codex,
+                status: codexStatus,
                 host: host
             )
         }
@@ -111,10 +115,10 @@ final class AiosBroadcaster {
         tier: String,
         label: String,
         app: AppUsage,
+        status: UsageProviderStatus,
         host: String
     ) async {
         guard let url = URL(string: endpoint) else { return }
-        let nowMs = Int(Date().timeIntervalSince1970 * 1000)
         let windowJSON = { (w: WindowUsage) -> [String: Any] in
             var out: [String: Any] = ["used": w.usedPercent]
             if let r = w.resetAt {
@@ -122,8 +126,15 @@ final class AiosBroadcaster {
             } else {
                 out["resetAt"] = NSNull()
             }
+            if let observedAt = w.observedAt {
+                out["observedAt"] = Int(observedAt.timeIntervalSince1970 * 1000)
+            }
+            if let source = w.source {
+                out["source"] = source.rawValue
+            }
             return out
         }
+        let providerTimestamp = status.lastSuccessAt ?? status.lastAttemptAt ?? Date()
         var body: [String: Any] = [
             "subscriptionId": subscriptionId,
             "owner": owner,
@@ -132,10 +143,13 @@ final class AiosBroadcaster {
             "weekly": windowJSON(app.weekly),
             "fiveHour": windowJSON(app.fiveHour),
             "host": host,
-            "ts": nowMs,
+            // Keep a failed poll from making cached values look newly observed
+            // downstream. Individual windows also carry their own timestamp.
+            "ts": Int(providerTimestamp.timeIntervalSince1970 * 1000),
+            "fresh": status.isLive,
         ]
         // Propagate error so the sidecar / frontend can dim the rings as stale.
-        let err = app.weekly.error ?? app.fiveHour.error
+        let err = status.failure?.message ?? app.weekly.error ?? app.fiveHour.error
         if let err { body["error"] = err }
 
         var req = URLRequest(url: url)

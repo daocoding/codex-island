@@ -20,6 +20,7 @@ struct PanelFooter: View {
     @ObservedObject private var screenPref = ScreenPref.shared
     @ObservedObject private var usageStore = UsageStore.shared
     @ObservedObject private var costStore = CostStore.shared
+    @ObservedObject private var visibility = ProviderVisibilityStore.shared
     @State private var liveStatusHovered = false
 
     var body: some View {
@@ -127,9 +128,25 @@ struct PanelFooter: View {
 
     private var activeLastUpdated: Date? {
         switch screenPref.screen {
-        case .usage: return usageStore.lastUpdated
+        case .usage: return visibleUsageStatuses.compactMap { $0.status.lastSuccessAt }.max()
         case .cost, .overview: return costStore.lastUpdated
         }
+    }
+
+    private var visibleUsageStatuses: [(name: String, status: UsageProviderStatus)] {
+        var statuses: [(String, UsageProviderStatus)] = []
+        if visibility.claudeVisible { statuses.append(("Claude", usageStore.claudeStatus)) }
+        if visibility.codexVisible { statuses.append(("Codex", usageStore.codexStatus)) }
+        return statuses
+    }
+
+    private var usageIsPartial: Bool {
+        !visibleUsageStatuses.isEmpty && visibleUsageStatuses.contains { !$0.status.isLive }
+    }
+
+    private var usagePartialLabel: String {
+        let names = visibleUsageStatuses.filter { !$0.status.isLive }.map { $0.name }
+        return L10n.tr("%@ stale", names.joined(separator: "+"))
     }
 
     @ViewBuilder
@@ -139,11 +156,19 @@ struct PanelFooter: View {
         // each store's refresh() prevent click-spam from stacking fetches.
         Button(action: triggerRefresh) {
             HStack(spacing: 6) {
-                LiveDot(active: activeLastUpdated != nil && !activeLoading)
+                LiveDot(active: activeLastUpdated != nil && !activeLoading
+                    && !(screenPref.screen == .usage && usageIsPartial))
                 if activeLoading {
                     Text(L10n.tr("Syncing…"))
                         .font(Typography.label)
                         .foregroundStyle(.white.opacity(0.55))
+                } else if screenPref.screen == .usage && usageIsPartial {
+                    Text(L10n.tr("Partial"))
+                        .font(Typography.label)
+                        .foregroundStyle(.white.opacity(liveStatusHovered ? 0.85 : 0.55))
+                    Text(usagePartialLabel)
+                        .font(Typography.bodyNumber)
+                        .foregroundStyle(IslandColor.alertAmber.opacity(liveStatusHovered ? 0.95 : 0.72))
                 } else if let updated = activeLastUpdated {
                     Text(L10n.tr("Synced"))
                         .font(Typography.label)
@@ -193,6 +218,9 @@ struct PanelFooter: View {
 
     private var liveStatusSpoken: String {
         if activeLoading { return L10n.tr("Syncing") }
+        if screenPref.screen == .usage && usageIsPartial {
+            return L10n.tr("Partial, %@", usagePartialLabel)
+        }
         if let updated = activeLastUpdated { return L10n.tr("Synced %@", relative(updated)) }
         return L10n.tr("Idle")
     }

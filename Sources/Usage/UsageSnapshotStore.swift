@@ -11,6 +11,12 @@ struct UsageSnapshot: Codable {
 }
 
 enum UsageSnapshotStore {
+    private enum WindowKind {
+        case fiveHour
+        case weekly
+        case scopedWeekly
+    }
+
     private static let storageKey = "CodexIsland.latestUsageSnapshot.v1"
     private static let maxSnapshotAge: TimeInterval = 8 * 86400
 
@@ -46,7 +52,7 @@ enum UsageSnapshotStore {
         at: Date,
         defaults: UserDefaults
     ) {
-        guard let sanitizedUsage = sanitized(usage, now: at) else { return }
+        let sanitizedUsage = sanitizedUsage(usage, now: at, fallbackObservedAt: at)
         var snapshot = rawLoad(defaults: defaults)
         snapshot[keyPath: provider] = UsageSnapshotRecord(at: at, usage: sanitizedUsage)
         if let data = try? JSONEncoder().encode(snapshot) {
@@ -66,33 +72,76 @@ enum UsageSnapshotStore {
         now: Date
     ) -> UsageSnapshotRecord? {
         guard let record,
-              now.timeIntervalSince(record.at) <= maxSnapshotAge,
-              let usage = sanitized(record.usage, now: now)
+              now.timeIntervalSince(record.at) <= maxSnapshotAge
         else { return nil }
+        let usage = sanitizedUsage(record.usage, now: now, fallbackObservedAt: record.at)
         return UsageSnapshotRecord(at: record.at, usage: usage)
     }
 
-    private static func sanitized(_ usage: AppUsage, now: Date) -> AppUsage? {
+    /// Resolve the values that are still valid at `now`. This is used both at
+    /// snapshot hydration and by the live store on every poll, so an app that
+    /// stays open across a reset boundary cannot keep showing the prior cycle.
+    static func sanitizedUsage(
+        _ usage: AppUsage,
+        now: Date,
+        fallbackObservedAt: Date? = nil
+    ) -> AppUsage {
         var usage = usage
-        usage.fiveHour = sanitized(usage.fiveHour, now: now)
-        usage.weekly = sanitized(usage.weekly, now: now)
+        usage.fiveHour = sanitized(
+            usage.fiveHour,
+            window: .fiveHour,
+            now: now,
+            fallbackObservedAt: fallbackObservedAt
+        )
+        usage.weekly = sanitized(
+            usage.weekly,
+            window: .weekly,
+            now: now,
+            fallbackObservedAt: fallbackObservedAt
+        )
         if let scoped = usage.scopedWeekly {
-            let sanitizedScoped = sanitized(scoped, now: now)
-            usage.scopedWeekly = sanitizedScoped.error == nil ? sanitizedScoped : nil
-            if usage.scopedWeekly == nil {
-                usage.scopedLabel = nil
-            }
+            // Preserve the known plan slot and label after its cycle expires;
+            // `.unknown` renders as a dash/empty ring instead of making Fable
+            // silently disappear from a Max user's three-ring vocabulary.
+            usage.scopedWeekly = sanitized(
+                scoped,
+                window: .scopedWeekly,
+                now: now,
+                fallbackObservedAt: fallbackObservedAt
+            )
         }
-
-        let hasWindow = usage.fiveHour.error == nil
-            || usage.weekly.error == nil
-            || usage.scopedWeekly != nil
-        return hasWindow ? usage : nil
+        return usage
     }
 
-    private static func sanitized(_ window: WindowUsage, now: Date) -> WindowUsage {
-        guard window.error == nil else { return .unknown }
+    private static func sanitized(
+        _ window: WindowUsage,
+        window kind: WindowKind,
+        now: Date,
+        fallbackObservedAt: Date?
+    ) -> WindowUsage {
+        guard window.hasKnownValue else { return .unknown }
         if let resetAt = window.resetAt, resetAt <= now { return .unknown }
-        return window
+
+        let observedAt = window.observedAt ?? fallbackObservedAt
+        if window.resetAt == nil,
+           let observedAt,
+           now.timeIntervalSince(observedAt) > maxAgeWithoutReset(for: kind) {
+            return .unknown
+        }
+
+        return WindowUsage(
+            usedPercent: window.usedPercent,
+            resetAt: window.resetAt,
+            error: nil,
+            observedAt: observedAt,
+            source: window.source ?? (fallbackObservedAt == nil ? nil : .migratedCache)
+        )
+    }
+
+    private static func maxAgeWithoutReset(for window: WindowKind) -> TimeInterval {
+        switch window {
+        case .fiveHour: return 6 * 3600
+        case .weekly, .scopedWeekly: return 36 * 3600
+        }
     }
 }

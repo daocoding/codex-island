@@ -25,12 +25,15 @@ struct UsageView: View {
             switch (claudeOn, codexOn) {
             case (true, true):
                 ChartsBlock(color: IslandColor.claude, usage: store.claude,
+                            status: store.claudeStatus,
                             style: style, seed: 1, provider: .claude)
                 hairline
                 ChartsBlock(color: IslandColor.codex, usage: store.codex,
+                            status: store.codexStatus,
                             style: style, seed: 3, provider: .codex)
             case (true, false):
                 ChartsBlock(color: IslandColor.claude, usage: store.claude,
+                            status: store.claudeStatus,
                             style: style, seed: 1, provider: .claude)
                 hairline
                 PerModelBreakdown(provider: .claude, metric: .tokens)
@@ -44,6 +47,7 @@ struct UsageView: View {
                     .transition(breakdownTransition)
                 hairline
                 ChartsBlock(color: IslandColor.codex, usage: store.codex,
+                            status: store.codexStatus,
                             style: style, seed: 3, provider: .codex)
             case (false, false):
                 BothHiddenPlaceholder()
@@ -78,17 +82,14 @@ struct UsageView: View {
 struct ChartsBlock: View {
     let color: Color
     let usage: AppUsage
+    let status: UsageProviderStatus
     let style: ChartStyle
     let seed: Int
     let provider: AlertEngine.Provider
 
-    /// Treat the block as needing re-auth when both windows are stuck on the
-    /// scope-insufficient sentinel. Either tile alone could be a transient
-    /// per-window failure, but matching pair = the underlying token genuinely
-    /// lacks the required scope.
     private var needsReauth: Bool {
-        usage.fiveHour.error == ClaudeCredentials.reauthRequiredMessage
-            && usage.weekly.error == ClaudeCredentials.reauthRequiredMessage
+        guard provider == .claude, let kind = status.failure?.kind else { return false }
+        return kind == .authenticationExpired || kind == .reauthenticationRequired
     }
 
     var body: some View {
@@ -124,12 +125,59 @@ struct ChartsBlock: View {
                     }
                 }
             }
-            if needsReauth && ClaudeCredentials.canPromptReauth() {
-                ReauthButton()
+            if let statusMessage {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(status.failure == nil ? .white.opacity(0.32) : IslandColor.alertAmber)
+                        .frame(width: 4, height: 4)
+                    Text(statusMessage)
+                        .font(Typography.micro)
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if needsReauth && ClaudeCredentials.canPromptReauth() {
+                        ReauthButton()
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.horizontal, 12)
+    }
+
+    private var statusMessage: String? {
+        let cachedPrefix: String? = {
+            guard status.lastSuccessAt != nil || usage.hasKnownValue else { return nil }
+            if status.source == .mixedLocalFallback { return L10n.tr("5h local") }
+            guard let lastSuccessAt = status.lastSuccessAt else { return L10n.tr("cached") }
+            let age = Duration.compact(max(0, Date().timeIntervalSince(lastSuccessAt)))
+            return L10n.tr("cached %@ ago", age)
+        }()
+
+        guard let failure = status.failure else {
+            return status.source == .cached ? cachedPrefix : nil
+        }
+
+        let issue: String = {
+            switch failure.kind {
+            case .authenticationExpired:
+                return L10n.tr("Claude sign-in expired")
+            case .reauthenticationRequired:
+                return L10n.tr("Claude sign-in needs renewal")
+            case .rateLimited:
+                if let retryAt = status.retryAt {
+                    return L10n.tr(
+                        "retry in %@",
+                        Duration.compact(max(0, retryAt.timeIntervalSinceNow))
+                    )
+                }
+                return L10n.tr("rate limited")
+            case .transport, .other:
+                return failure.message
+            }
+        }()
+        return [cachedPrefix, issue].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
@@ -183,13 +231,17 @@ struct ChartTile: View {
         let label = L10n.tr(labelKey)
 
         Group {
-            switch style {
-            case .ring:    RingChart(value: value, color: color, label: label, sub: sub)
-            case .bar:     BarChart(value: value, color: color, label: label, sub: sub)
-            case .stepped: SteppedChart(value: value, color: color, label: label, sub: sub)
-            case .numeric: NumericChart(value: value, color: color, label: label, sub: compactSubCaption())
-            case .spark:   SparkChart(value: value, color: color, label: label, sub: sub,
-                                      seed: seed, history: historyPoints())
+            if window.hasKnownValue {
+                switch style {
+                case .ring:    RingChart(value: value, color: color, label: label, sub: sub)
+                case .bar:     BarChart(value: value, color: color, label: label, sub: sub)
+                case .stepped: SteppedChart(value: value, color: color, label: label, sub: sub)
+                case .numeric: NumericChart(value: value, color: color, label: label, sub: compactSubCaption())
+                case .spark:   SparkChart(value: value, color: color, label: label, sub: sub,
+                                          seed: seed, history: historyPoints())
+                }
+            } else {
+                UnavailableChart(label: label)
             }
         }
         .id(style)
@@ -200,7 +252,11 @@ struct ChartTile: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .frame(height: Self.tileHeight)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(L10n.tr("%@, %d%%", label, Int(value)))
+        .accessibilityLabel(
+            window.hasKnownValue
+                ? L10n.tr("%@, %d%%", label, Int(value))
+                : L10n.tr("%@, unavailable", label)
+        )
         .accessibilityValue(subCaption())
     }
 
@@ -253,5 +309,25 @@ struct ChartTile: View {
             return err
         }
         return ""
+    }
+}
+
+private struct UnavailableChart: View {
+    let label: String
+
+    var body: some View {
+        VStack(spacing: 7) {
+            Text(label)
+                .font(Typography.label)
+                .foregroundStyle(.white.opacity(0.42))
+                .textCase(.lowercase)
+            Text("—")
+                .font(Typography.chartValue)
+                .foregroundStyle(.white.opacity(0.28))
+            Text(L10n.tr("unavailable"))
+                .font(Typography.caption)
+                .foregroundStyle(.white.opacity(0.28))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
