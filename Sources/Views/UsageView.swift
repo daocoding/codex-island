@@ -92,6 +92,9 @@ struct ChartsBlock: View {
     let seed: Int
     let provider: AlertEngine.Provider
 
+    /// Only a missing-scope failure requires a fresh interactive login. A
+    /// short-lived access-token expiry is not sign-out: CCD or Claude Code can
+    /// renew it without asking the user to authenticate again.
     private var needsReauth: Bool {
         guard provider == .claude, let kind = status.failure?.kind else { return false }
         return kind.requiresInteractiveReauthentication
@@ -99,37 +102,43 @@ struct ChartsBlock: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 18) {
-                if provider == .claude {
-                    // Keep Claude's fixed three-slot tree independent of
-                    // Codex's adaptive window shape. In particular, Fable is
-                    // a separate server-scoped weekly bucket and must remain
-                    // visible whenever Anthropic reports it.
-                    ChartTile(style: style, color: color, labelKey: "5h",
-                              window: usage.fiveHour, seed: seed,
-                              provider: provider, windowKind: .fiveHour)
-                    ChartTile(style: style, color: color, labelKey: "week",
-                              window: usage.weekly, seed: seed + 1,
-                              provider: provider, windowKind: .weekly)
-                    if let scoped = usage.scopedWeekly {
-                        ChartTile(style: style, color: color,
-                                  labelKey: usage.scopedLabel ?? "model",
-                                  window: scoped, seed: seed + 4,
-                                  provider: provider, windowKind: .scopedWeekly)
-                    }
-                } else {
-                    if let label = usage.shortWindowLabel {
-                        ChartTile(style: style, color: color, labelKey: label,
+            if needsReauth {
+                ReauthState(color: color, message: status.failure?.message)
+                    .transition(.chartSwap.animation(.chartSwap))
+            } else {
+                HStack(spacing: 18) {
+                    if provider == .claude {
+                        // Claude has three stable semantic slots; Fable is a
+                        // server-scoped weekly bucket, not a Codex-style
+                        // duration-adaptive window.
+                        ChartTile(style: style, color: color, labelKey: "5h",
                                   window: usage.fiveHour, seed: seed,
                                   provider: provider, windowKind: .fiveHour)
-                    }
-                    if let label = usage.weeklyWindowLabel {
-                        ChartTile(style: style, color: color, labelKey: label,
+                        ChartTile(style: style, color: color, labelKey: "week",
                                   window: usage.weekly, seed: seed + 1,
                                   provider: provider, windowKind: .weekly)
+                        if let scoped = usage.scopedWeekly {
+                            ChartTile(style: style, color: color,
+                                      labelKey: usage.scopedLabel ?? "model",
+                                      window: scoped, seed: seed + 4,
+                                      provider: provider, windowKind: .scopedWeekly)
+                        }
+                    } else {
+                        if let label = usage.shortWindowLabel {
+                            ChartTile(style: style, color: color, labelKey: label,
+                                      window: usage.fiveHour, seed: seed,
+                                      provider: provider, windowKind: .fiveHour)
+                        }
+                        if let label = usage.weeklyWindowLabel {
+                            ChartTile(style: style, color: color, labelKey: label,
+                                      window: usage.weekly, seed: seed + 1,
+                                      provider: provider, windowKind: .weekly)
+                        }
                     }
                 }
+                .transition(.chartSwap.animation(.chartSwap))
             }
+
             if let statusMessage {
                 HStack(spacing: 6) {
                     Circle()
@@ -140,9 +149,6 @@ struct ChartsBlock: View {
                         .foregroundStyle(.white.opacity(0.48))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if needsReauth && ClaudeCredentials.canPromptReauth() {
-                        ReauthButton()
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -207,6 +213,35 @@ struct ChartsBlock: View {
     }
 }
 
+/// Shown in place of the Claude tiles only when a fresh login is genuinely
+/// required (missing OAuth scope). Ordinary access expiry keeps cached values
+/// visible and waits for CCD or Claude Code to renew the shared credential.
+struct ReauthState: View {
+    let color: Color
+    let message: String?
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "key.slash")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(color.opacity(0.85))
+            if ClaudeCredentials.canPromptReauth() {
+                Text(L10n.tr("Claude sign-in needs renewal"))
+                    .font(Typography.label)
+                    .foregroundStyle(.white.opacity(0.55))
+                ReauthButton()
+            } else {
+                Text(message ?? ClaudeCredentials.reauthRequiredMessage)
+                    .font(Typography.label)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, 8)
+    }
+}
+
 /// Inline action shown below the Claude tiles when the keychain token is
 /// missing the scope the usage endpoint now requires. Spawns
 /// `claude auth login` and polls for the keychain to update — the chip
@@ -230,9 +265,11 @@ struct ReauthButton: View {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 5))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(scale: 0.97))
         .disabled(store.claudeReauthInProgress)
         .onHover { hovered = $0 }
+        .animation(.hoverFade, value: hovered)
+        .animation(.hoverFade, value: store.claudeReauthInProgress)
     }
 }
 
@@ -307,16 +344,10 @@ struct ChartTile: View {
         // OAuth call lands. Hide it so the tile reads as a passive
         // window-context cue (the "5h"/"week" header label communicates the
         // window type) instead of looking broken. Real errors still surface.
+        // A missing-scope failure is handled by ReauthState (which replaces
+        // the Claude tiles), so any error reaching a tile here is a genuine
+        // per-window caption worth showing verbatim.
         if let err = window.error, err != "no data" {
-            // Suppress the scope-insufficient text when the inline re-auth
-            // button is going to appear below the tiles — otherwise the same
-            // remediation hint reads twice (caption + button label). Users
-            // without a discoverable `claude` binary still get the raw text
-            // so they know the manual fix.
-            if err == ClaudeCredentials.reauthRequiredMessage,
-               ClaudeCredentials.canPromptReauth() {
-                return ""
-            }
             return err
         }
         return ""
@@ -328,10 +359,6 @@ struct ChartTile: View {
             return "↻ " + Duration.compact(delta)
         }
         if let err = window.error, err != "no data" {
-            if err == ClaudeCredentials.reauthRequiredMessage,
-               ClaudeCredentials.canPromptReauth() {
-                return ""
-            }
             return err
         }
         return ""

@@ -9,9 +9,19 @@ final class IslandModel: ObservableObject {
         case expanded
     }
 
+    /// Fired when a swipe tries to page past either end of the carousel.
+    /// `PagedContent` turns it into a small rubber-band nudge so the
+    /// dead-end gesture gets visible feedback instead of silently doing
+    /// nothing. Fresh id per attempt so repeated over-swipes re-trigger.
+    struct EdgeBump: Equatable {
+        let id: UUID
+        let direction: Int
+    }
+
     @Published var state: State = .compact
     @Published var size: CGSize = .zero
     @Published var notch: NotchInfo
+    @Published var edgeBump: EdgeBump?
 
     /// Side extension that houses each provider's always-visible compact
     /// usage gauge. 185pt hardware notch + 2×38pt = the 261pt rest contract.
@@ -88,14 +98,20 @@ final class IslandModel: ObservableObject {
     func advanceScreen() {
         let pages = ScreenPref.Screen.allCases
         let index = ScreenPref.shared.screen.pageIndex
-        guard index < pages.count - 1 else { return }
+        guard index < pages.count - 1 else {
+            edgeBump = EdgeBump(id: UUID(), direction: 1)
+            return
+        }
         showScreen(pages[index + 1])
     }
 
     func rewindScreen() {
         let pages = ScreenPref.Screen.allCases
         let index = ScreenPref.shared.screen.pageIndex
-        guard index > 0 else { return }
+        guard index > 0 else {
+            edgeBump = EdgeBump(id: UUID(), direction: -1)
+            return
+        }
         showScreen(pages[index - 1])
     }
 

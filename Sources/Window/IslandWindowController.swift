@@ -220,7 +220,7 @@ final class IslandWindowController {
         window.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.4
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().alphaValue = 1
         }
     }

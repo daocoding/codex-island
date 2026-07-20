@@ -23,10 +23,10 @@ struct SettingsButton: View {
                         .fill(.white.opacity(hovered ? 0.08 : 0))
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
         .onHover { hovered = $0 }
         .help(L10n.tr("Settings"))
-        .animation(.strongEaseOut, value: hovered)
+        .animation(.hoverFade, value: hovered)
         .accessibilityLabel(L10n.tr("Settings"))
     }
 }

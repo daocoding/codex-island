@@ -8,6 +8,8 @@ struct IslandRootView: View {
     @State private var pillsVisible = false
     @State private var pulseToken: UUID?
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
         VStack(spacing: 0) {
             // Only the rotating loading sweep needs per-frame re-renders
@@ -55,12 +57,17 @@ struct IslandRootView: View {
                     // the panel content (220ms after hover-in, immediately
                     // on hover-out) and the .frame here tracks model.size,
                     // so the halo grows/shrinks with the spring morph.
-                    IslandShape()
-                        .fill(.ultraThinMaterial)
-                        .padding(-9)
-                        .blur(radius: 8)
-                        .opacity(contentVisible ? 0.55 : 0)
-                        .allowsHitTesting(false)
+                    //
+                    // Purely decorative, so Reduce Transparency drops it
+                    // entirely — the solid black silhouette is the UI.
+                    if !reduceTransparency {
+                        IslandShape()
+                            .fill(.ultraThinMaterial)
+                            .padding(-9)
+                            .blur(radius: 8)
+                            .opacity(contentVisible ? 0.55 : 0)
+                            .allowsHitTesting(false)
+                    }
                 }
                 .overlay(alignment: .topLeading) {
                     if model.state != .expanded {
@@ -128,8 +135,13 @@ struct IslandRootView: View {
                             contentVisible = true
                         }
                     }
+                    // Guard against a hover-out landing inside the 250ms
+                    // wait: under always-show it restores the pills at peek,
+                    // and this stale callback would hide them again — leaving
+                    // the rest state pill-less until the next hover cycle.
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        withAnimation(.easeIn(duration: 0.18)) {
+                        guard model.state == .expanded else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
                             pillsVisible = false
                         }
                     }
@@ -515,6 +527,12 @@ private struct CompactProviderGauge: View {
         let remaining = resetAt.timeIntervalSince(date)
         guard remaining > 0 else { return "0m" }
         if remaining < 60 { return "<1m" }
+        // The ring center is a 24pt slot. Expanded captions can afford
+        // upstream's `6d 23h`, but the permanent notch instrument needs the
+        // deliberately glanceable day-only form Tony chose (`6d`).
+        if remaining >= 86_400 {
+            return "\(Int(remaining / 86_400))d"
+        }
         return Duration.compact(remaining)
     }
 

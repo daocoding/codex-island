@@ -117,8 +117,8 @@ struct SettingsView: View {
                         }
                 }
         }
-        .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.12), value: isOn)
+        .buttonStyle(PressableButtonStyle(scale: 0.97))
+        .animation(.hoverFade, value: isOn)
         .accessibilityLabel(L10n.tr("%@ tab", L10n.tr(tab.label)))
         .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
     }

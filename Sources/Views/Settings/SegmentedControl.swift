@@ -34,7 +34,8 @@ struct SegmentedControl<Value: Hashable>: View {
                                 }
                         }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableButtonStyle(scale: 0.97))
+                .animation(.hoverFade, value: isOn)
                 .accessibilityLabel(accessibilityPrefix.isEmpty
                     ? itemLabel
                     : L10n.tr("%@, %@", L10n.tr(accessibilityPrefix), itemLabel))
@@ -73,8 +74,9 @@ struct PillButton: View {
                         }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle(scale: 0.97))
         .disabled(isLoading)
         .opacity(isLoading ? 0.55 : 1)
+        .animation(.hoverFade, value: isLoading)
     }
 }

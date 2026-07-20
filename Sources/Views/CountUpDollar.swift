@@ -45,12 +45,23 @@ struct CountUpDollar: View {
         }
         .onChange(of: target) { _ in
             // Smooth update during a refresh — count from where the eye
-            // last saw the number, not from zero.
-            startValue = lastSeenTarget
+            // last saw the number, not from zero. If a prior count is
+            // still in flight, resume from the interpolated on-screen
+            // value so the retarget never visibly snaps.
+            startValue = displayedValue()
             animationStart = Date()
             lastSeenTarget = target
             startAnimation()
         }
+    }
+
+    private func displayedValue() -> Double {
+        guard animating else { return lastSeenTarget }
+        let elapsed = Date().timeIntervalSince(animationStart)
+        guard elapsed < Self.duration else { return lastSeenTarget }
+        let t = max(0, min(1, elapsed / Self.duration))
+        let eased = 1 - pow(1 - t, 3)
+        return startValue + (lastSeenTarget - startValue) * eased
     }
 
     @ViewBuilder

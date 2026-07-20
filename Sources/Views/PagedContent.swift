@@ -17,6 +17,7 @@ struct PagedContent: View {
     @ObservedObject var model: IslandModel
     @ObservedObject private var screenPref = ScreenPref.shared
     @State private var peekOffset: CGFloat = 0
+    @State private var bumpOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -32,7 +33,7 @@ struct PagedContent: View {
                     .frame(width: pageWidth)
             }
             .frame(width: pageWidth, height: geo.size.height, alignment: .topLeading)
-            .offset(x: (-pageWidth * CGFloat(screenPref.screen.pageIndex)) + peekOffset)
+            .offset(x: (-pageWidth * CGFloat(screenPref.screen.pageIndex)) + peekOffset + bumpOffset)
             .animation(.pageSwipe, value: screenPref.screen)
             .clipped()
             .onAppear {
@@ -52,6 +53,23 @@ struct PagedContent: View {
                 // transition fires alongside it.
                 if swiped, peekOffset != 0 {
                     withAnimation(.pageSwipe) { peekOffset = 0 }
+                }
+            }
+            .onChange(of: model.edgeBump) { bump in
+                // Rubber-band at the carousel ends: an over-swipe nudges
+                // the row 12pt toward the attempted direction and springs
+                // back, so the dead-end gesture reads as "you're at the
+                // edge" instead of a dropped input. The bumpOffset == 0
+                // guard swallows Shift+wheel tick spam while a bump is
+                // already in flight.
+                guard let bump, bumpOffset == 0 else { return }
+                withAnimation(.easeOut(duration: 0.10)) {
+                    bumpOffset = bump.direction > 0 ? -12 : 12
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 1.0)) {
+                        bumpOffset = 0
+                    }
                 }
             }
         }

@@ -266,6 +266,14 @@ struct ResolveUsageTests {
         expect(reset == ISO8601DateFormatter().date(from: "2026-07-17T00:00:00Z"),
                "T9 local session-limit reset parses in its named timezone")
 
+        // Upstream's dedicated auth panel is retained, but it must follow our
+        // typed provider health: ordinary access expiry is recoverable by CCD
+        // or Claude Code and must not demand a fresh interactive login.
+        expect(!UsageFailureKind.authenticationExpired.requiresInteractiveReauthentication,
+               "T9 access expiry does not trigger interactive reauthentication")
+        expect(UsageFailureKind.reauthenticationRequired.requiresInteractiveReauthentication,
+               "T9 missing OAuth scope triggers the dedicated reauthentication panel")
+
         // The store and views match these exact strings; a reword is a
         // breaking change for them, not a copy edit.
         expect(ClaudeCredentials.rateLimitedMessage == "rate limited", "rateLimitedMessage literal is stable")
